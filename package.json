@@ -3,8 +3,11 @@
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "build": "tsc && cp -r src/views build/views || true", // Compila TypeScript y copia recursos
+    "start": "node build/server.js", // Punto de entrada en producción
+    "dev": "ts-node-dev src/server.ts", // Para desarrollo local
+    "lint": "eslint . --ext .ts,.tsx", // Opcional: si usas ESLint
+    "type-check": "tsc --noEmit" // Verificación de tipos
   },
   "dependencies": {
     "cors": "^2.8.5",
