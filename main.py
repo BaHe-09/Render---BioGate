@@ -8,7 +8,7 @@ import io
 app = FastAPI()
 
 # Carga el modelo YOLO al iniciar
-modelo_yolo = YOLO('yolov8n-face-lindevs.pt')
+modelo_yolo = YOLO('yolov8n-face-lindevs.pt').to('cpu')  # Fuerza uso de CPU
 
 @app.post("/detect-faces")
 async def detect_faces(file: UploadFile = File(...)):
