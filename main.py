@@ -1,16 +1,16 @@
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # Fuerza CPU
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import StreamingResponse
 import cv2
 import numpy as np
 from ultralytics import YOLO
 import io
+import uvicorn  # Importación crítica
 
 app = FastAPI()
 
-# Carga el modelo con seguridad
-model = YOLO('yolov8n-face-lindevs.pt', task='detect')
+# Configuración de modelo (usa CPU)
+model = YOLO('yolov8n-face-lindevs.pt').to('cpu')
 
 @app.post("/detect-faces")
 async def detect_faces(file: UploadFile = File(...)):
@@ -33,3 +33,7 @@ async def detect_faces(file: UploadFile = File(...)):
     
     except Exception as e:
         return {"error": str(e)}
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))  # Usa el puerto de Render o 10000 local
+    uvicorn.run("main:app", host="0.0.0.0", port=port, workers=1)
