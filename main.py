@@ -106,3 +106,8 @@ def find_closest_match(db: Session, embedding: np.ndarray, threshold: float) -> 
 @app.get("/")
 def read_root():
     return {"message": "Face Recognition API"}
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 10000))  # Usa el puerto de Render o 10000 local
+    uvicorn.run(app, host="0.0.0.0", port=port)
