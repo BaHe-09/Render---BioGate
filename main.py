@@ -6,6 +6,7 @@ from models import process_image, get_face_embedding
 from database import get_db
 from typing import List, Dict, Any
 import os
+import uvicorn
 
 app = FastAPI()
 
@@ -108,6 +109,11 @@ def read_root():
     return {"message": "Face Recognition API"}
 
 if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 10000))  # Usa el puerto de Render o 10000 local
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        workers=1,  # Reduce workers para ahorrar memoria
+        log_level="info"
+    )
