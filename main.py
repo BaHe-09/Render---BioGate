@@ -1,111 +1,108 @@
-from fastapi import FastAPI, HTTPException, Depends
-from sqlalchemy.orm import Session
-from sqlalchemy import text
-import bcrypt
-from pydantic import BaseModel
-from database import get_db
-import logging
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
+import numpy as np
+from models import process_image, get_face_embedding
+from database import get_db
+from typing import List, Dict, Any
 import os
 
-# Configuración básica de logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Inicializa la app FastAPI
 app = FastAPI()
 
-# Configura CORS (¡Ajusta los orígenes en producción!)
+# Configura CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permite todos los orígenes (solo para desarrollo)
+    allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Modelo para los datos de login
-class UserLogin(BaseModel):
-    username: str
-    password: str
+# Modelos pre-cargados (se inicializarán al iniciar la app)
+yolo_model = None
+facenet_model = None
 
-# Endpoint raíz
+@app.on_event("startup")
+async def startup_event():
+    global yolo_model, facenet_model
+    # Inicializa los modelos aquí
+    from models import load_models
+    yolo_model, facenet_model = load_models()
+
+@app.post("/recognize")
+async def recognize_face(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    threshold: float = 0.7
+):
+    try:
+        # 1. Procesar imagen con YOLO
+        image_bytes = await file.read()
+        face_image = process_image(image_bytes, yolo_model)
+        
+        if face_image is None:
+            return {"status": "error", "message": "No face detected"}
+        
+        # 2. Obtener embedding con FaceNet
+        embedding = get_face_embedding(face_image, facenet_model)
+        
+        # 3. Buscar en la base de datos
+        closest_match = find_closest_match(db, embedding, threshold)
+        
+        if closest_match:
+            return {
+                "status": "success",
+                "match": True,
+                "confidence": float(1 - closest_match["distance"]),
+                "person": closest_match["persona"],
+                "vector_id": closest_match["id_vector"]
+            }
+        else:
+            return {
+                "status": "success",
+                "match": False,
+                "message": "Unknown face"
+            }
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+def find_closest_match(db: Session, embedding: np.ndarray, threshold: float) -> Dict[str, Any]:
+    # Convertir el embedding a una lista para la consulta SQL
+    embedding_list = embedding.tolist()
+    
+    # Consulta para encontrar el vector más cercano
+    query = """
+        SELECT 
+            v.id_vector,
+            v.vector <-> %s AS distance,
+            p.*
+        FROM 
+            vectores_identificacion v
+        JOIN 
+            personas p ON v.id_persona = p.id_persona
+        ORDER BY 
+            vector <-> %s
+        LIMIT 1
+    """
+    
+    result = db.execute(query, (embedding_list, embedding_list)).fetchone()
+    
+    if result and result["distance"] <= threshold:
+        return {
+            "id_vector": result["id_vector"],
+            "distance": result["distance"],
+            "persona": {
+                "id_persona": result["id_persona"],
+                "nombre": result["nombre"],
+                "apellido_paterno": result["apellido_paterno"],
+                "apellido_materno": result["apellido_materno"],
+                "telefono": result["telefono"],
+                "correo_electronico": result["correo_electronico"]
+            }
+        }
+    return None
+
 @app.get("/")
 def read_root():
-    return {
-        "message": "API de autenticación funcionando",
-        "status": "active",
-        "endpoints": {
-            "login": "POST /login/",
-            "generate_password": "GET /generate-password/",
-            "docs": "/docs"
-        }
-    }
-
-# Endpoint de autenticación
-@app.post("/login/")
-def login(user: UserLogin, db: Session = Depends(get_db)):
-    try:
-        logger.info(f"Intento de login para: {user.username}")
-        
-        # 1. Buscar usuario en la base de datos
-        query = text("""
-            SELECT id_cuenta, contrasena_hash 
-            FROM cuentas 
-            WHERE nombre_usuario = :username
-            LIMIT 1
-        """)
-        result = db.execute(query, {"username": user.username})
-        user_db = result.fetchone()
-
-        if not user_db:
-            logger.warning("Usuario no encontrado")
-            raise HTTPException(
-                status_code=401,
-                detail="Credenciales inválidas",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
-
-        # 2. Verificar contraseña con bcrypt
-        if not bcrypt.checkpw(
-            user.password.encode('utf-8'),
-            user_db.contrasena_hash.encode('utf-8')
-        ):
-            logger.warning("Contraseña incorrecta")
-            raise HTTPException(
-                status_code=401,
-                detail="Credenciales inválidas",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
-
-        logger.info("Autenticación exitosa")
-        return {
-            "status": "success",
-            "user_id": user_db.id_cuenta,
-            "message": "Autenticación exitosa"
-        }
-
-    except HTTPException:
-        raise  # Re-lanza excepciones HTTP manejadas
-        
-    except Exception as e:
-        logger.error(f"Error inesperado: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="Error interno del servidor"
-        )
-
-# Endpoint para generar hashes de contraseña (solo desarrollo)
-@app.get("/generate-password/")
-def generate_password(password: str):
-    """Genera un hash bcrypt para contraseñas (uso en desarrollo)"""
-    hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-    return {
-        "original": password,
-        "hashed": hashed.decode('utf-8'),
-        "warning": "No usar en producción"
-    }
-
-# Health check para Render (evita hibernación)
-@app.get("/health")
-def health_check():
-    return {"status": "ok", "service": "auth-api"}
+    return {"message": "Face Recognition API"}
