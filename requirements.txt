@@ -2,7 +2,7 @@ fastapi==0.109.0
 uvicorn==0.27.0
 numpy==1.24.4
 opencv-python-headless==4.8.1.78
+ultralytics==8.0.196
 python-multipart==0.0.6
-torch==2.0.1  # Versión compatible con YOLO (CPU-only)
+torch==2.0.1
 torchvision==0.15.2
-ultralytics==8.0.196  # Única instancia
