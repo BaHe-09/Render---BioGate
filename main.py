@@ -9,6 +9,10 @@ import uvicorn  # Importación crítica
 
 app = FastAPI()
 
+@app.get("/")
+def health_check():
+    return {"status": "OK", "message": "API de detección facial"}
+
 # Configuración de modelo (usa CPU)
 model = YOLO('yolov8n-face-lindevs.pt').to('cpu')
 
