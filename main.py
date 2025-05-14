@@ -4,6 +4,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # Desactiva GPU
 
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 import numpy as np
 import cv2
@@ -13,28 +14,31 @@ from numpy.linalg import norm
 from typing import List, Optional
 from pydantic import BaseModel
 from database import get_db
+import asyncio
+import logging
 
-app = FastAPI()
+# Configuración básica de logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Face Recognition API",
+              description="API para reconocimiento facial usando YOLOv8 y FaceNet")
+
+# Configura CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Configuración
 SIMILARITY_THRESHOLD = 0.7  # Umbral de similitud para reconocimiento
-MAX_IMAGE_SIZE = 640  # Tamaño máximo para procesamiento en Render free tier
+MAX_IMAGE_SIZE = 640  # Tamaño máximo para procesamiento
 
 # Modelos (carga diferida)
 MODELS = {}
-
-def get_yolo_model():
-    if 'yolo' not in MODELS:
-        MODELS['yolo'] = YOLO('yolov8n-face-lindevs.pt').to('cpu')
-    return MODELS['yolo']
-
-def get_facenet_model():
-    if 'facenet' not in MODELS:
-        # Versión ligera de FaceNet para Render free tier
-        model = tf.keras.models.load_model('facenet_keras.h5', compile=False)
-        model._layers = model.layers[:4]  # Usar solo primeras capas para reducir memoria
-        MODELS['facenet'] = model
-    return MODELS['facenet']
+MODELS_READY = False
 
 class FaceRecognitionResult(BaseModel):
     face_id: int
@@ -44,38 +48,92 @@ class FaceRecognitionResult(BaseModel):
     is_known: bool
     bounding_box: List[int]
 
+@app.on_event("startup")
+async def load_models():
+    """Carga los modelos de IA al iniciar la aplicación"""
+    global MODELS_READY
+    try:
+        logger.info("Cargando modelos de IA...")
+        
+        # Carga YOLO para detección de rostros
+        MODELS['yolo'] = YOLO('yolov8n-face-lindevs.pt').to('cpu')
+        
+        # Carga FaceNet optimizado para embeddings
+        MODELS['facenet'] = tf.keras.models.load_model(
+            'facenet_keras.h5',
+            compile=False
+        )
+        # Reducimos el modelo para ahorrar memoria
+        MODELS['facenet']._layers = MODELS['facenet'].layers[:4]
+        
+        MODELS_READY = True
+        logger.info("✅ Modelos cargados exitosamente")
+    except Exception as e:
+        logger.error(f"❌ Error cargando modelos: {str(e)}")
+        raise RuntimeError(f"No se pudieron cargar los modelos: {str(e)}")
+
+def get_yolo_model():
+    """Obtiene el modelo YOLO (carga diferida)"""
+    if not MODELS_READY:
+        raise HTTPException(status_code=503, detail="Modelos no cargados aún")
+    return MODELS['yolo']
+
+def get_facenet_model():
+    """Obtiene el modelo FaceNet (carga diferida)"""
+    if not MODELS_READY:
+        raise HTTPException(status_code=503, detail="Modelos no cargados aún")
+    return MODELS['facenet']
+
+@app.get("/health")
+async def health_check():
+    """Endpoint de salud para Render"""
+    return {
+        "status": "ready" if MODELS_READY else "loading",
+        "service": "face-recognition",
+        "models_loaded": MODELS_READY
+    }
+
 @app.post("/recognize-faces")
 async def recognize_faces(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     threshold: float = SIMILARITY_THRESHOLD
 ):
+    """
+    Endpoint para reconocimiento facial.
+    Recibe una imagen y devuelve los rostros reconocidos.
+    """
     try:
-        # 1. Leer y redimensionar imagen para ahorrar memoria
+        if not MODELS_READY:
+            raise HTTPException(status_code=503, detail="Modelos no cargados aún")
+
+        # 1. Leer y redimensionar imagen
         contents = await file.read()
         nparr = np.frombuffer(contents, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        # Reducción de tamaño para ahorrar memoria
         img = cv2.resize(img, (MAX_IMAGE_SIZE, int(MAX_IMAGE_SIZE * img.shape[0]/img.shape[1])))
         
         # 2. Detección de rostros con YOLO
         yolo = get_yolo_model()
-        results = yolo(img, verbose=False)  # verbose=False para reducir logs
+        results = yolo(img, verbose=False)
         
         recognition_results = []
         for i, det in enumerate(results[0].boxes.xyxy.cpu().numpy()):
             x1, y1, x2, y2 = map(int, det[:4])
             
-            # 3. Recortar rostro y preprocesar para FaceNet
+            # 3. Preprocesamiento para FaceNet
             face_img = img[y1:y2, x1:x2]
             face_resized = cv2.resize(face_img, (160, 160))
             face_normalized = (face_resized - 127.5) / 128.0
             
-            # 4. Generar embedding con FaceNet (versión ligera)
+            # 4. Generar embedding
             facenet = get_facenet_model()
             embedding = facenet.predict(np.expand_dims(face_normalized, axis=0))[0]
-            embedding /= norm(embedding)  # Normalizar
+            embedding /= norm(embedding)
             
-            # 5. Buscar coincidencia en la base de datos
+            # 5. Buscar coincidencia en DB
             match = find_closest_match(db, embedding, threshold)
             
             recognition_results.append(FaceRecognitionResult(
@@ -89,11 +147,14 @@ async def recognize_faces(
         
         return {"results": recognition_results}
     
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error en reconocimiento: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 def find_closest_match(db: Session, embedding: np.ndarray, threshold: float):
-    """Busca el vector más cercano en la base de datos"""
+    """Busca coincidencias en la base de datos"""
     embedding_list = embedding.tolist()
     
     query = """
@@ -127,8 +188,25 @@ def find_closest_match(db: Session, embedding: np.ndarray, threshold: float):
 
 @app.get("/")
 async def root():
-    return {"message": "Hello World"}
-    
+    """Endpoint raíz con documentación básica"""
+    return {
+        "message": "Bienvenido a la API de reconocimiento facial",
+        "status": "active",
+        "endpoints": {
+            "recognize": "POST /recognize-faces",
+            "health": "GET /health",
+            "docs": "/docs"
+        },
+        "models_ready": MODELS_READY
+    }
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))  # Usa $PORT o 10000
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+    import uvicorn
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        workers=1,
+        timeout_keep_alive=120
+    )
