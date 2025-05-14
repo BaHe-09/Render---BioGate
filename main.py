@@ -1,93 +1,99 @@
 import os
-import cv2
-import numpy as np
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Silencia logs de TensorFlow
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # Desactiva GPU
+
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from database import get_db
-from pydantic import BaseModel
-from typing import List
+import numpy as np
+import cv2
 import tensorflow as tf
 from ultralytics import YOLO
 from numpy.linalg import norm
-import io
+from typing import List, Optional
+from pydantic import BaseModel
+from database import get_db
 
 app = FastAPI()
 
-# Modelos
-yolo_model = YOLO('yolov8n-face-lindevs.pt')
-facenet_model = tf.keras.models.load_model('facenet_keras.h5')  # Descarga previamente este modelo
-
 # Configuración
-SIMILARITY_THRESHOLD = 0.7  # Ajusta según tus necesidades
+SIMILARITY_THRESHOLD = 0.7  # Umbral de similitud para reconocimiento
+MAX_IMAGE_SIZE = 640  # Tamaño máximo para procesamiento en Render free tier
 
-class FaceMatchResult(BaseModel):
-    person_id: int
-    name: str
-    similarity: float
+# Modelos (carga diferida)
+MODELS = {}
+
+def get_yolo_model():
+    if 'yolo' not in MODELS:
+        MODELS['yolo'] = YOLO('yolov8n-face-lindevs.pt').to('cpu')
+    return MODELS['yolo']
+
+def get_facenet_model():
+    if 'facenet' not in MODELS:
+        # Versión ligera de FaceNet para Render free tier
+        model = tf.keras.models.load_model('facenet_keras.h5', compile=False)
+        model._layers = model.layers[:4]  # Usar solo primeras capas para reducir memoria
+        MODELS['facenet'] = model
+    return MODELS['facenet']
+
+class FaceRecognitionResult(BaseModel):
+    face_id: int
+    person_id: Optional[int]
+    name: Optional[str]
+    similarity: Optional[float]
     is_known: bool
+    bounding_box: List[int]
 
-@app.post("/detect-and-recognize")
-async def detect_and_recognize(
+@app.post("/recognize-faces")
+async def recognize_faces(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     threshold: float = SIMILARITY_THRESHOLD
 ):
     try:
-        # 1. Detección de rostros con YOLO
-        image_bytes = await file.read()
-        nparr = np.frombuffer(image_bytes, np.uint8)
+        # 1. Leer y redimensionar imagen para ahorrar memoria
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        img = cv2.resize(img, (MAX_IMAGE_SIZE, int(MAX_IMAGE_SIZE * img.shape[0]/img.shape[1])))
         
-        # Detectar rostros
-        results = yolo_model(img)
-        faces = []
-        for result in results:
-            boxes = result.boxes.xyxy.cpu().numpy()
-            for box in boxes:
-                x1, y1, x2, y2 = map(int, box)
-                face_img = img[y1:y2, x1:x2]
-                faces.append(face_img)
+        # 2. Detección de rostros con YOLO
+        yolo = get_yolo_model()
+        results = yolo(img, verbose=False)  # verbose=False para reducir logs
         
-        if not faces:
-            return JSONResponse(content={"message": "No faces detected"})
-        
-        # 2. Procesar cada rostro con FaceNet
         recognition_results = []
-        for face_img in faces:
-            # Preprocesamiento para FaceNet
+        for i, det in enumerate(results[0].boxes.xyxy.cpu().numpy()):
+            x1, y1, x2, y2 = map(int, det[:4])
+            
+            # 3. Recortar rostro y preprocesar para FaceNet
+            face_img = img[y1:y2, x1:x2]
             face_resized = cv2.resize(face_img, (160, 160))
             face_normalized = (face_resized - 127.5) / 128.0
-            face_expanded = np.expand_dims(face_normalized, axis=0)
             
-            # Generar embedding
-            embedding = facenet_model.predict(face_expanded)[0]
-            embedding_normalized = embedding / norm(embedding)
+            # 4. Generar embedding con FaceNet (versión ligera)
+            facenet = get_facenet_model()
+            embedding = facenet.predict(np.expand_dims(face_normalized, axis=0))[0]
+            embedding /= norm(embedding)  # Normalizar
             
-            # 3. Buscar en la base de datos
-            closest_match = find_closest_match(db, embedding_normalized, threshold)
+            # 5. Buscar coincidencia en la base de datos
+            match = find_closest_match(db, embedding, threshold)
             
-            if closest_match:
-                recognition_results.append({
-                    "person_id": closest_match["id_persona"],
-                    "name": closest_match["nombre"],
-                    "similarity": float(1 - closest_match["distance"]),
-                    "is_known": True
-                })
-            else:
-                recognition_results.append({
-                    "person_id": None,
-                    "name": "Unknown",
-                    "similarity": 0,
-                    "is_known": False
-                })
+            recognition_results.append(FaceRecognitionResult(
+                face_id=i,
+                person_id=match["id_persona"] if match else None,
+                name=match["nombre"] if match else "Desconocido",
+                similarity=float(1 - match["distance"]) if match else 0,
+                is_known=match is not None,
+                bounding_box=[x1, y1, x2, y2]
+            ))
         
-        return {"faces": recognition_results}
+        return {"results": recognition_results}
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 def find_closest_match(db: Session, embedding: np.ndarray, threshold: float):
+    """Busca el vector más cercano en la base de datos"""
     embedding_list = embedding.tolist()
     
     query = """
@@ -96,7 +102,6 @@ def find_closest_match(db: Session, embedding: np.ndarray, threshold: float):
             v.id_persona,
             p.nombre,
             p.apellido_paterno,
-            p.correo_electronico,
             v.vector <-> %s AS distance
         FROM 
             vectores_identificacion v
@@ -120,7 +125,11 @@ def find_closest_match(db: Session, embedding: np.ndarray, threshold: float):
         }
     return None
 
-# Health check para Render (evita hibernación)
-@app.get("/health")
-def health_check():
-    return {"status": "ok", "service": "face-api"}
+@app.get("/healthcheck")
+def healthcheck():
+    return {"status": "ok", "memory_usage": f"{os.getpid()} MB"}
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port, workers=1)
