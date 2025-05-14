@@ -125,10 +125,10 @@ def find_closest_match(db: Session, embedding: np.ndarray, threshold: float):
         }
     return None
 
-@app.get("/healthcheck")
-def healthcheck():
-    return {"status": "ok", "memory_usage": f"{os.getpid()} MB"}
-
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}
+    
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))  # Usa $PORT o 10000
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
