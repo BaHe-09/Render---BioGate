@@ -1,43 +1,41 @@
-import cv2
-import numpy as np
-from tensorflow.keras.models import load_model
-from mtcnn import MTCNN
+import os
+from urllib.parse import urlparse
+from psycopg2 import pool  # Añadir esto al inicio del archivo
 
-# Cargar modelos una vez
-def load_facenet_model():
-    # Modelo Facenet (asegúrate de tener el modelo .h5 en tu proyecto)
-    facenet_model = load_model('facenet_keras.h5', compile=False)
-    return facenet_model
+# Conexión pool para mejor manejo de conexiones
+connection_pool = None
 
-# Preprocesamiento de imagen para Facenet
-def preprocess_face(face, required_size=(160, 160)):
-    face = cv2.resize(face, required_size)
-    face = face.astype('float32')
-    mean, std = face.mean(), face.std()
-    face = (face - mean) / std
-    return np.expand_dims(face, axis=0)
-
-# Obtener embedding de una imagen
-def get_embedding(model, image):
-    # Detectar rostros con MTCNN
-    detector = MTCNN()
-    faces = detector.detect_faces(image)
+def init_db_pool():
+    global connection_pool
+    db_uri = os.getenv("NEON_DB_URI")
+    if not db_uri:
+        raise ValueError("NEON_DB_URI no está configurado en las variables de entorno")
     
-    if not faces:
-        return None
+    # Parsear la URI
+    result = urlparse(db_uri)
+    username = result.username
+    password = result.password
+    database = result.path[1:]  # Elimina el '/' inicial
+    hostname = result.hostname
+    port = result.port or 5432
     
-    # Tomar el rostro principal (el de mayor confianza)
-    main_face = max(faces, key=lambda x: x['confidence'])
-    x, y, w, h = main_face['box']
-    face = image[y:y+h, x:x+w]
-    
-    # Preprocesar y obtener embedding
-    face = preprocess_face(face)
-    embedding = model.predict(face)[0]
-    return embedding.tolist()
+    connection_pool = pool.SimpleConnectionPool(
+        minconn=1,
+        maxconn=10,
+        user=username,
+        password=password,
+        host=hostname,
+        port=port,
+        database=database,
+        sslmode="require"  # NeonTech requiere SSL
+    )
 
-# Comparar con vectores en la base de datos
-def compare_with_db(db_config, embedding, threshold=0.7, top_k=5):
+def compare_with_db(embedding, threshold=0.7, top_k=5):
+    global connection_pool
+    
+    if connection_pool is None:
+        init_db_pool()
+    
     query = """
     SELECT 
         v.id_vector,
@@ -54,11 +52,14 @@ def compare_with_db(db_config, embedding, threshold=0.7, top_k=5):
     """
     
     try:
-        with psycopg2.connect(**db_config, cursor_factory=RealDictCursor) as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (embedding, embedding, threshold, top_k))
-                results = cur.fetchall()
-                return results
+        conn = connection_pool.getconn()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, (embedding, embedding, threshold, top_k))
+            results = cur.fetchall()
+            return results
     except Exception as e:
         print(f"Database error: {e}")
         return []
+    finally:
+        if conn:
+            connection_pool.putconn(conn)
