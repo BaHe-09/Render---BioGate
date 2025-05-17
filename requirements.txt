@@ -1,9 +1,10 @@
-fastapi==0.95.2
-uvicorn==0.22.0
-numpy==1.24.3
-opencv-python==4.7.0.72
-tensorflow==2.12.0
-mtcnn==0.1.1
-psycopg2-binary==2.9.6
-python-dotenv==1.0.0
-urllib3==1.26.16
+fastapi==0.109.0
+uvicorn==0.27.0
+numpy==1.24.4
+opencv-python-headless==4.8.1.78
+ultralytics==8.0.196
+python-multipart==0.0.6
+torch==2.0.1  # Versión compatible con YOLO (CPU-only)
+torch==2.0.1
+torchvision==0.15.2
+ultralytics==8.0.196  # Única instancia
