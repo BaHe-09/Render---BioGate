@@ -5,8 +5,8 @@ import tensorflow as tf
 from sklearn.metrics.pairwise import cosine_similarity
 from app.db import get_vectors, log_access
 
-yolo = YOLO("models/yolov8n-face-lindevs.pt")
-facenet = tf.keras.models.load_model("models/facenet_model.h5")
+yolo = YOLO("yolov8n-face-lindevs.pt")
+facenet = tf.keras.models.load_model("facenet_keras.h5")
 
 def detect_face(image_np):
     results = yolo(image_np)[0]
