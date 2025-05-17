@@ -1,9 +1,0 @@
-fastapi==0.109.0
-uvicorn==0.27.0
-numpy==1.24.4
-opencv-python-headless==4.8.1.78
-ultralytics==8.0.196
-tensorflow==2.15.0
-python-dotenv==1.0.0
-psycopg2-binary==2.9.9
-sqlalchemy==2.0.25
