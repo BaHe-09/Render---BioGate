@@ -1,51 +1,86 @@
-from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+import cv2
 import numpy as np
-from PIL import Image
-import io
+import tempfile
+import os
+from keras_facenet import FaceNet
+from ultralytics import YOLO
+import psycopg2
+from psycopg2.extras import Json
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI()
 
-@app.get("/")
-async def root():
-    return {"message": "API de Reconocimiento Facial funcionando"}
+yolo = YOLO('models/yolov8n-face-lindevs.pt')
+facenet = FaceNet()
+conn = psycopg2.connect(os.getenv('NEON_DATABASE_URL'))
 
-@app.post("/predict/")
-async def predict(file: UploadFile = File(...)):
+def extraer_rostro(img_path: str) -> np.ndarray:
+    img = cv2.imread(img_path)
+    if img is None:
+        raise HTTPException(status_code=400, detail="No se pudo leer la imagen")
+    results = yolo(img)
+    if not results or len(results[0].boxes) == 0:
+        raise HTTPException(status_code=404, detail="No se detectaron rostros")
+    boxes = results[0].boxes
+    main_box = boxes[np.argmax(boxes.conf.cpu().numpy())]
+    x1, y1, x2, y2 = map(int, main_box.xyxy[0].cpu().numpy())
+    face = img[y1:y2, x1:x2]
+    if face.size == 0:
+        raise HTTPException(status_code=400, detail="Área de rostro inválida")
+    return face
+
+def generar_embedding(face: np.ndarray) -> np.ndarray:
+    face_rgb = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
+    face_resized = cv2.resize(face_rgb, (160, 160))
+    embedding = facenet.embeddings(np.expand_dims(face_resized, axis=0))[0]
+    return embedding
+
+def buscar_coincidencia(embedding: np.ndarray, threshold: float=0.7):
+    with conn.cursor() as cursor:
+        cursor.execute("""
+            SELECT p.id_persona, p.nombre, p.apellido_paterno, p.apellido_materno, p.correo_electronico,
+                   1 - (v.vector <=> %s::vector) as similitud
+            FROM vectores_identificacion v
+            JOIN personas p ON v.id_persona = p.id_persona
+            WHERE 1 - (v.vector <=> %s::vector) > %s
+            ORDER BY similitud DESC
+            LIMIT 1
+        """, (embedding.tolist(), embedding.tolist(), threshold))
+        return cursor.fetchone()
+
+@app.post("/clasificar")
+async def clasificar(file: UploadFile = File(...), threshold: float = Query(0.7, ge=0.5, le=0.9)):
     try:
-        # Leer imagen
-        contents = await file.read()
-        image = Image.open(io.BytesIO(contents)).convert("RGB")
+        # Guardar imagen temporalmente con tempfile
+        suffix = os.path.splitext(file.filename)[1] or ".jpg"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(await file.read())
+            temp_path = tmp.name
 
-        # === Carga diferida de modelos ===
-        from ultralytics import YOLO
-        from keras.models import load_model
-
-        yolomodel = YOLO("yolov8n-face.pt")
-        facenet = load_model("facenet_keras.h5")
-
-        # === Detección de rostros con YOLO ===
-        results = yolomodel.predict(source=np.array(image), conf=0.5, verbose=False)
-        if not results or len(results[0].boxes) == 0:
-            return JSONResponse(status_code=404, content={"message": "No se detectó ningún rostro."})
-
-        # Obtener la primer detección
-        box = results[0].boxes[0].xyxy[0].cpu().numpy().astype(int)
-        x1, y1, x2, y2 = box
-        face_crop = image.crop((x1, y1, x2, y2)).resize((160, 160))
-
-        # === Vector de embedding con FaceNet ===
-        face_array = np.asarray(face_crop).astype("float32")
-        mean, std = face_array.mean(), face_array.std()
-        face_array = (face_array - mean) / std
-        face_array = np.expand_dims(face_array, axis=0)
-        embedding = facenet.predict(face_array)[0]
-
-        return {
-            "message": "Embeddings generados correctamente",
-            "embedding": embedding.tolist()
-        }
-
+        face = extraer_rostro(temp_path)
+        embedding = generar_embedding(face)
+        resultado = buscar_coincidencia(embedding, threshold)
+        
+        os.remove(temp_path)  # limpiar archivo temporal
+        
+        if resultado:
+            id_persona, nombre, apellido_p, apellido_m, correo, similitud = resultado
+            return {
+                "status": "success",
+                "persona": {
+                    "id": id_persona,
+                    "nombre": nombre,
+                    "apellido_paterno": apellido_p,
+                    "apellido_materno": apellido_m,
+                    "correo": correo,
+                },
+                "similitud": similitud
+            }
+        else:
+            return {"status": "no_match"}
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        print("Error interno:", e)
+        raise HTTPException(status_code=500, detail=str(e))
