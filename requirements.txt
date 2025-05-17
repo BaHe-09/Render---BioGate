@@ -1,7 +1,7 @@
 fastapi==0.95.2
 uvicorn==0.22.0
-numpy==1.24.3
-tensorflow==2.12.0
+numpy==1.23.5  # Versión compatible con Python 3.9
+tensorflow==2.10.1  # Última versión compatible con Python 3.9
 pillow==9.5.0
 python-multipart==0.0.6
 facenet-keras==0.0.4
