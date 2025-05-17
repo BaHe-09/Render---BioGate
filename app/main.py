@@ -22,8 +22,8 @@ async def predict(file: UploadFile = File(...)):
         from ultralytics import YOLO
         from keras.models import load_model
 
-        yolomodel = YOLO("app/models/yolov8n-face.pt")
-        facenet = load_model("app/models/facenet_keras.h5")
+        yolomodel = YOLO("yolov8n-face.pt")
+        facenet = load_model("facenet_keras.h5")
 
         # === Detección de rostros con YOLO ===
         results = yolomodel.predict(source=np.array(image), conf=0.5, verbose=False)
