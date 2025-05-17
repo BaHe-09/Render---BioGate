@@ -1,8 +1,8 @@
 fastapi==0.108.0
 uvicorn==0.27.0
+numpy==1.26.4
 tensorflow==2.15.0
-keras-facenet==0.3.2
-scipy==1.11.4
 pillow==10.2.0
 python-multipart==0.0.9
-numpy==1.26.4
+keras-facenet==0.3.2
+scipy==1.11.4
