@@ -84,3 +84,7 @@ async def clasificar(file: UploadFile = File(...), threshold: float = Query(0.7,
     except Exception as e:
         print("Error interno:", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
