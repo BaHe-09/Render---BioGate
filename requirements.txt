@@ -4,3 +4,4 @@ sqlalchemy==2.0.15
 psycopg2-binary==2.9.6
 bcrypt==4.0.1
 python-dotenv==1.0.0  # Para variables de entorno (opcional)
+pydantic==1.10.7  # <--- Agrega esta línea
