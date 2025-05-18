@@ -33,7 +33,7 @@ def preprocess_image(img: Image.Image) -> np.ndarray:
         img = img.convert('RGB')
     return np.array(img)
 
-def search_similar_embeddings(db: Session, embedding: List[float], threshold: float = 0.6):
+def search_similar_embeddings(db: Session, embedding: List[float], threshold: float = 0.5):
     """Busca embeddings similares en la base de datos"""
     try:
         # Convertir a array PostgreSQL
