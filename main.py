@@ -9,20 +9,14 @@ from sqlalchemy.orm import Session
 from database import get_db
 from sqlalchemy import text
 import logging
-from fastapi.middleware.cors import CORSMiddleware
+
 
 app = FastAPI(
     title="FaceNet Embeddings API",
     description="API para extraer y comparar embeddings faciales usando Keras-FaceNet y PostgreSQL con pgvector",
     version="1.0.0"
 )
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # En producción, reemplaza con tu dominio de la app
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
