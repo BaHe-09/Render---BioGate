@@ -16,6 +16,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
+@app.get("/health-check")
+async def health_check():
+    return {"status": "ok"}
+    
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
