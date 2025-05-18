@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from sqlalchemy import text
 import logging
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
     title="FaceNet Embeddings API",
