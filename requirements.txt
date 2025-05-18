@@ -10,4 +10,4 @@ opencv-python-headless==4.9.0.80
 sqlalchemy==2.0.25
 psycopg2-binary==2.9.9
 python-dotenv==1.0.0
-sqlalchemy-vector==0.1.0  # Reemplazo para pgvector
+pgvector==0.4.1  # Versión más reciente y estable
