@@ -69,7 +69,7 @@ def read_root():
 def login(user: UserLogin, db: Session = Depends(get_db)):
     try:
         logger.info(f"Intento de login para: {user.username}")
-
+        
         # 1. Buscar usuario en la base de datos
         query = text("""
             SELECT id_cuenta, contrasena_hash 
@@ -120,10 +120,8 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
 def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
     try:
         logger.info(f"Intento de registro para: {usuario.persona.email}")
-
+        
         # Verificar si el correo ya existe
-        query_correo = text("SELECT 1 FROM personas WHERE correo_electronico = :correo")
-        if db.execute(query_correo, {"correo": usuario.persona.email}).fetchone():
         correo_existente = db.execute(
             text("SELECT 1 FROM personas WHERE correo_electronico = :correo"),
             {"correo": usuario.persona.email}
@@ -137,8 +135,6 @@ def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
 
         # Verificar si el nombre de usuario ya existe
         nombre_usuario = usuario.persona.email.split('@')[0]
-        query_usuario = text("SELECT 1 FROM cuentas WHERE nombre_usuario = :username")
-        if db.execute(query_usuario, {"username": nombre_usuario}).fetchone():
         usuario_existente = db.execute(
             text("SELECT 1 FROM cuentas WHERE nombre_usuario = :username"),
             {"username": nombre_usuario}
@@ -150,29 +146,24 @@ def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
                 detail="El nombre de usuario ya está en uso"
             )
 
-        # Iniciar transacción
-        db.begin()
         # Hashear contraseña
         hashed_password = bcrypt.hashpw(
             usuario.cuenta.password.encode('utf-8'),
             bcrypt.gensalt()
         ).decode('utf-8')
 
-        try:
-            # Insertar persona
-            query_persona = text("""
         # Insertar persona (SQLAlchemy automáticamente maneja la transacción)
         result_persona = db.execute(
             text("""
                 INSERT INTO personas (
                     nombre, apellido_paterno, apellido_materno, 
                     telefono, correo_electronico, fecha_registro, activo
-@@ -153,25 +164,21 @@
+                ) 
+                VALUES (
+                    :nombre, :apellido_paterno, :apellido_materno, 
                     :telefono, :correo, :fecha_registro, TRUE
                 )
                 RETURNING id_persona
-            """)
-            result_persona = db.execute(query_persona, {
             """),
             {
                 "nombre": usuario.persona.name,
@@ -181,58 +172,34 @@ def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
                 "telefono": usuario.persona.phone,
                 "correo": usuario.persona.email,
                 "fecha_registro": datetime.now()
-            })
-            id_persona = result_persona.scalar_one()
-
-            # Hashear contraseña
-            hashed_password = bcrypt.hashpw(
-                usuario.cuenta.password.encode('utf-8'),
-                bcrypt.gensalt()
-            ).decode('utf-8')
             }
         )
         id_persona = result_persona.scalar_one()
 
-            # Insertar cuenta con rol de Administrador (id_rol = 1)
-            query_cuenta = text("""
         # Insertar cuenta
         db.execute(
             text("""
                 INSERT INTO cuentas (
                     id_persona, id_rol, nombre_usuario, 
                     contrasena_hash, sal, ultimo_acceso
-@@ -184,51 +191,47 @@
+                ) 
+                VALUES (
+                    :id_persona, 
+                    1,  -- Rol de Administrador
+                    :nombre_usuario, 
+                    :contrasena_hash, 
                     '',  -- Sal (ya incluida en bcrypt)
                     :ultimo_acceso
                 )
-            """)
-            db.execute(query_cuenta, {
             """),
             {
                 "id_persona": id_persona,
                 "nombre_usuario": nombre_usuario,
                 "contrasena_hash": hashed_password,
                 "ultimo_acceso": datetime.now()
-            })
-
-            db.commit()
-            logger.info(f"Usuario administrador registrado exitosamente: {usuario.persona.email}")
-
-            return {
-                "status": "success",
-                "id_persona": id_persona,
-                "nombre_usuario": nombre_usuario,
-                "message": "Usuario administrador registrado exitosamente"
             }
         )
 
-        except Exception as e:
-            db.rollback()
-            logger.error(f"Error en transacción: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Error al registrar usuario"
-            )
         db.commit()  # Confirmar ambas operaciones juntas
         logger.info(f"Usuario administrador registrado exitosamente: {usuario.persona.email}")
 
@@ -254,7 +221,6 @@ def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error interno del servidor"
         )
-
 @app.get("/generate-password/")
 def generate_password(password: str):
     """Genera un hash bcrypt para contraseñas (uso en desarrollo)"""
