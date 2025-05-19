@@ -266,6 +266,7 @@ def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
 @app.get("/usuarios/", response_model=List[Usuario])
 def obtener_usuarios(
     search: Optional[str] = Query(None),
+    incluir_admin: Optional[bool] = Query(False, description="Incluir administradores en los resultados"),
     db: Session = Depends(get_db)
 ):
     try:
@@ -285,9 +286,9 @@ def obtener_usuarios(
             FROM personas p
             JOIN cuentas c ON p.id_persona = c.id_persona
             JOIN roles r ON c.id_rol = r.id_rol
-            WHERE r.nombre != 'Administrador'
-            AND (CONCAT(p.nombre, ' ', p.apellido_paterno) LIKE :search
+            WHERE (CONCAT(p.nombre, ' ', p.apellido_paterno) LIKE :search
                  OR p.correo_electronico LIKE :search)
+            """ + ("AND r.nombre != 'Administrador'" if not incluir_admin else "") + """
             ORDER BY p.nombre
         """)
         result = db.execute(query, query_params)
@@ -314,26 +315,25 @@ def obtener_usuarios(
 def actualizar_estado_usuario(
     id_persona: int, 
     usuario_update: UsuarioUpdate,
+    incluir_admin: Optional[bool] = Query(False, description="Permitir actualizar administradores"),
     db: Session = Depends(get_db)
 ):
     try:
-        # Verificar si el usuario existe y no es administrador
-        usuario = db.execute(
-            text("""
-                SELECT p.id_persona 
-                FROM personas p
-                JOIN cuentas c ON p.id_persona = c.id_persona
-                JOIN roles r ON c.id_rol = r.id_rol
-                WHERE p.id_persona = :id
-                AND r.nombre != 'Administrador'
-            """),
-            {"id": id_persona}
-        ).fetchone()
+        # Verificar si el usuario existe
+        query = text("""
+            SELECT p.id_persona 
+            FROM personas p
+            JOIN cuentas c ON p.id_persona = c.id_persona
+            JOIN roles r ON c.id_rol = r.id_rol
+            WHERE p.id_persona = :id
+            """ + ("AND r.nombre != 'Administrador'" if not incluir_admin else ""))
+        
+        usuario = db.execute(query, {"id": id_persona}).fetchone()
         
         if not usuario:
             raise HTTPException(
                 status_code=404,
-                detail="Usuario no encontrado o no permitido"
+                detail="Usuario no encontrado" + ("" if incluir_admin else " o no permitido")
             )
 
         # Actualizar estado
