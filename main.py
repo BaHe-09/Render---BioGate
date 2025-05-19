@@ -72,6 +72,11 @@ class Usuario(BaseModel):
     activo: bool
     id_rol: int
     nombre_rol: str
+    es_admin: bool = Field(False, description="Indica si el usuario es administrador")
+
+    @validator('es_admin', pre=True, always=True)
+    def set_es_admin(cls, v, values):
+        return values.get('nombre_rol', '').lower() == 'administrador'
 
 class UsuarioUpdate(BaseModel):
     activo: bool
