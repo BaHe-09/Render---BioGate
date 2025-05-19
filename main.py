@@ -64,6 +64,15 @@ class HistorialFiltrado(BaseModel):
     resultado: Optional[str] = None
     nombre: Optional[str] = None
 
+class Persona(BaseModel):
+    id_persona: int
+    nombre_completo: str
+    correo_electronico: Optional[str]
+    activo: bool
+
+class ActualizarEstadoPersona(BaseModel):
+    activo: bool
+
 # --- Endpoints ---
 @app.get("/")
 def read_root():
@@ -361,6 +370,84 @@ def generate_password(password: str):
         "warning": "No usar en producción"
     }
 
+@app.get("/personas/", response_model=List[Persona])
+def obtener_personas(db: Session = Depends(get_db)):
+    try:
+        query = text("""
+            SELECT 
+                id_persona,
+                CONCAT(nombre, ' ', apellido_paterno) as nombre_completo,
+                correo_electronico,
+                activo
+            FROM personas
+            ORDER BY nombre, apellido_paterno
+        """)
+        result = db.execute(query)
+        personas = result.fetchall()
+        
+        return [{
+            "id_persona": p.id_persona,
+            "nombre_completo": p.nombre_completo,
+            "correo_electronico": p.correo_electronico,
+            "activo": p.activo
+        } for p in personas]
+        
+    except Exception as e:
+        logger.error(f"Error al obtener personas: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Error al obtener la lista de personas"
+        )
+
+@app.put("/personas/{id_persona}/estado", status_code=status.HTTP_200_OK)
+def actualizar_estado_persona(
+    id_persona: int,
+    estado: ActualizarEstadoPersona,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Verificar si la persona existe
+        persona_existente = db.execute(
+            text("SELECT 1 FROM personas WHERE id_persona = :id"),
+            {"id": id_persona}
+        ).scalar()
+        
+        if not persona_existente:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Persona no encontrada"
+            )
+
+        # Actualizar estado
+        db.execute(
+            text("""
+                UPDATE personas 
+                SET activo = :activo 
+                WHERE id_persona = :id_persona
+            """),
+            {
+                "id_persona": id_persona,
+                "activo": estado.activo
+            }
+        )
+        db.commit()
+        
+        return {
+            "status": "success",
+            "message": "Estado actualizado correctamente"
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error al actualizar estado: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al actualizar el estado"
+        )
+        
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "auth-api"}
