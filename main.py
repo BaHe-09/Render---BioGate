@@ -35,6 +35,7 @@ class RegistroPersona(BaseModel):
     secondLastName: Optional[str] = None  # Segundo apellido (opcional)
     phone: str  # Teléfono completo (código + número)
     email: EmailStr  # Correo electrónico
+    genero: Optional[str] = None
 
 class RegistroCuenta(BaseModel):
     password: str  # Contraseña
@@ -50,19 +51,17 @@ class UsuarioRegistro(BaseModel):
     persona: RegistroPersona
     cuenta: RegistroCuenta
 
-class HistorialAcceso(BaseModel):
-    id_acceso: int
+class UsuarioResponse(BaseModel):
+    id_persona: int
     nombre_completo: str
-    fecha: str
-    resultado: str
-    dispositivo: str
-    foto_url: Optional[str] = None
+    correo_electronico: Optional[str] = None
+    telefono: str
+    genero: Optional[str] = None
+    activo: bool
+    rol: str
 
-class HistorialFiltrado(BaseModel):
-    fecha_inicio: Optional[str] = None
-    fecha_fin: Optional[str] = None
-    resultado: Optional[str] = None
-    nombre: Optional[str] = None
+class ActualizarEstadoRequest(BaseModel):
+    activo: bool
 
 # --- Endpoints ---
 @app.get("/")
@@ -73,8 +72,9 @@ def read_root():
         "endpoints": {
             "login": "POST /login/",
             "register": "POST /registrar/",
-            "historial": "GET /historial-accesos/",
-            "generate_password": "GET /generate-password/",
+            "usuarios": "GET /personas/",
+            "usuario": "GET /personas/{id}",
+            "actualizar_estado": "PUT /personas/{id}/estado",
             "docs": "/docs"
         }
     }
@@ -171,11 +171,11 @@ def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
             text("""
                 INSERT INTO personas (
                     nombre, apellido_paterno, apellido_materno, 
-                    telefono, correo_electronico, fecha_registro, activo
+                    telefono, correo_electronico, genero, fecha_registro, activo
                 ) 
                 VALUES (
                     :nombre, :apellido_paterno, :apellido_materno, 
-                    :telefono, :correo, :fecha_registro, TRUE
+                    :telefono, :correo, :genero, :fecha_registro, TRUE
                 )
                 RETURNING id_persona
             """),
@@ -185,6 +185,7 @@ def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
                 "apellido_materno": usuario.persona.secondLastName,
                 "telefono": usuario.persona.phone,
                 "correo": usuario.persona.email,
+                "genero": usuario.persona.genero,
                 "fecha_registro": datetime.now()
             }
         )
@@ -236,130 +237,124 @@ def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
             detail="Error interno del servidor"
         )
 
-@app.get("/historial-accesos/", response_model=List[HistorialAcceso])
-def obtener_historial_accesos(
-    filtros: HistorialFiltrado = Depends(),
-    limite: int = Query(20, gt=0, le=100),
+@app.get("/personas/", response_model=List[UsuarioResponse])
+def obtener_personas(
+    rol: Optional[str] = Query(None),
+    activo: Optional[bool] = Query(None),
     db: Session = Depends(get_db)
 ):
     try:
-        query_params = {
-            "limite": limite,
-            "nombre": f"%{filtros.nombre}%" if filtros.nombre else "%"
-        }
-
-        # Construir la consulta base
         query = text("""
             SELECT 
-                ha.id_acceso,
+                p.id_persona,
                 CONCAT(p.nombre, ' ', p.apellido_paterno) as nombre_completo,
-                TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI AM') as fecha,
-                CASE 
-                    WHEN ha.resultado = 'Éxito' THEN 'PERMITIDO'
-                    ELSE 'DENEGADO'
-                END as resultado,
-                COALESCE(d.nombre, 'Desconocido') as dispositivo,
-                ha.foto_url
-            FROM historial_accesos ha
-            LEFT JOIN personas p ON ha.id_persona = p.id_persona
-            LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
-            WHERE CONCAT(p.nombre, ' ', p.apellido_paterno) LIKE :nombre
+                p.correo_electronico,
+                p.telefono,
+                p.genero,
+                p.activo,
+                r.nombre as rol
+            FROM personas p
+            JOIN cuentas c ON p.id_persona = c.id_persona
+            JOIN roles r ON c.id_rol = r.id_rol
+            WHERE r.nombre != 'Administrador'
+            AND (:rol IS NULL OR r.nombre = :rol)
+            AND (:activo IS NULL OR p.activo = :activo)
+            ORDER BY p.nombre
         """)
-
-        # Añadir filtros de fecha si están presentes
-        if filtros.fecha_inicio and filtros.fecha_fin:
-            query = text(str(query) + " AND ha.fecha BETWEEN :fecha_inicio AND :fecha_fin")
-            query_params.update({
-                "fecha_inicio": filtros.fecha_inicio,
-                "fecha_fin": filtros.fecha_fin
-            })
-        
-        # Añadir filtro de resultado si está presente
-        if filtros.resultado:
-            if filtros.resultado.upper() == 'PERMITIDO':
-                query = text(str(query) + " AND ha.resultado = 'Éxito'")
-            elif filtros.resultado.upper() == 'DENEGADO':
-                query = text(str(query) + " AND ha.resultado != 'Éxito'")
-
-        # Ordenar y limitar
-        query = text(str(query) + " ORDER BY ha.fecha DESC LIMIT :limite")
-
-        result = db.execute(query, query_params)
-        historial = result.fetchall()
-        
-        return [{
-            "id_acceso": item.id_acceso,
-            "nombre_completo": item.nombre_completo,
-            "fecha": item.fecha,
-            "resultado": item.resultado,
-            "dispositivo": item.dispositivo,
-            "foto_url": item.foto_url
-        } for item in historial]
+        result = db.execute(query, {"rol": rol, "activo": activo})
+        return result.fetchall()
         
     except Exception as e:
-        logger.error(f"Error al obtener historial: {str(e)}", exc_info=True)
+        logger.error(f"Error al obtener personas: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail="Error al obtener el historial de accesos"
+            detail="Error al obtener la lista de personas"
         )
 
-@app.get("/historial-accesos/{id_acceso}", response_model=HistorialAcceso)
-def obtener_detalle_acceso(id_acceso: int, db: Session = Depends(get_db)):
+@app.get("/personas/{id_persona}", response_model=UsuarioResponse)
+def obtener_persona(id_persona: int, db: Session = Depends(get_db)):
     try:
         query = text("""
             SELECT 
-                ha.id_acceso,
+                p.id_persona,
                 CONCAT(p.nombre, ' ', p.apellido_paterno) as nombre_completo,
-                TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI AM') as fecha,
-                CASE 
-                    WHEN ha.resultado = 'Éxito' THEN 'PERMITIDO'
-                    ELSE 'DENEGADO'
-                END as resultado,
-                COALESCE(d.nombre, 'Desconocido') as dispositivo,
-                ha.foto_url,
-                ha.confianza,
-                ha.metadatos
-            FROM historial_accesos ha
-            LEFT JOIN personas p ON ha.id_persona = p.id_persona
-            LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
-            WHERE ha.id_acceso = :id_acceso
+                p.correo_electronico,
+                p.telefono,
+                p.genero,
+                p.activo,
+                r.nombre as rol
+            FROM personas p
+            JOIN cuentas c ON p.id_persona = c.id_persona
+            JOIN roles r ON c.id_rol = r.id_rol
+            WHERE p.id_persona = :id_persona
+            AND r.nombre != 'Administrador'
         """)
-        result = db.execute(query, {"id_acceso": id_acceso})
-        acceso = result.fetchone()
-
-        if not acceso:
+        result = db.execute(query, {"id_persona": id_persona})
+        persona = result.fetchone()
+        
+        if not persona:
             raise HTTPException(
                 status_code=404,
-                detail="Registro de acceso no encontrado"
+                detail="Persona no encontrada o no tiene permisos"
             )
-
-        return {
-            "id_acceso": acceso.id_acceso,
-            "nombre_completo": acceso.nombre_completo,
-            "fecha": acceso.fecha,
-            "resultado": acceso.resultado,
-            "dispositivo": acceso.dispositivo,
-            "foto_url": acceso.foto_url
-        }
+            
+        return persona
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error al obtener detalle de acceso: {str(e)}", exc_info=True)
+        logger.error(f"Error al obtener persona: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail="Error al obtener el detalle del acceso"
+            detail="Error al obtener la información de la persona"
         )
 
-@app.get("/generate-password/")
-def generate_password(password: str):
-    """Genera un hash bcrypt para contraseñas (uso en desarrollo)"""
-    hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-    return {
-        "original": password,
-        "hashed": hashed.decode('utf-8'),
-        "warning": "No usar en producción"
-    }
+@app.put("/personas/{id_persona}/estado")
+def actualizar_estado(
+    id_persona: int,
+    datos: ActualizarEstadoRequest,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Verificar que el usuario existe y no es administrador
+        query = text("""
+            SELECT 1 FROM personas p
+            JOIN cuentas c ON p.id_persona = c.id_persona
+            JOIN roles r ON c.id_rol = r.id_rol
+            WHERE p.id_persona = :id_persona
+            AND r.nombre != 'Administrador'
+        """)
+        existe = db.execute(query, {"id_persona": id_persona}).scalar()
+        
+        if not existe:
+            raise HTTPException(
+                status_code=404,
+                detail="Persona no encontrada o no tiene permisos"
+            )
+        
+        # Actualizar estado
+        db.execute(
+            text("UPDATE personas SET activo = :activo WHERE id_persona = :id_persona"),
+            {"activo": datos.activo, "id_persona": id_persona}
+        )
+        db.commit()
+        
+        return {
+            "status": "success",
+            "activo": datos.activo,
+            "message": "Estado actualizado correctamente"
+        }
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error al actualizar estado: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Error al actualizar el estado de la persona"
+        )
 
 @app.get("/health")
 def health_check():
