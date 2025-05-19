@@ -4,11 +4,12 @@ import numpy as np
 from PIL import Image
 import io
 from keras_facenet import FaceNet
-from typing import List
+from typing import List, Optional
 from sqlalchemy.orm import Session
 from database import get_db
 from sqlalchemy import text
 import logging
+from datetime import datetime
 
 app = FastAPI(
     title="FaceNet Embeddings API",
@@ -41,7 +42,7 @@ def search_similar_embeddings(db: Session, embedding: List[float], threshold: fl
         
         query = text("""
             SELECT v.id_vector, p.id_persona, p.nombre, p.apellido_paterno, 
-                   1 - (v.vector <=> :embedding) as similitud
+                   p.activo, 1 - (v.vector <=> :embedding) as similitud
             FROM vectores_identificacion v
             JOIN personas p ON v.id_persona = p.id_persona
             WHERE 1 - (v.vector <=> :embedding) > :threshold
@@ -56,6 +57,34 @@ def search_similar_embeddings(db: Session, embedding: List[float], threshold: fl
         logger.error(f"Error en búsqueda de embeddings: {str(e)}")
         raise
 
+def register_access_attempt(db: Session, id_persona: Optional[int], confidence: Optional[float], 
+                           access_granted: bool, photo_url: Optional[str] = None):
+    """Registra un intento de acceso en el historial"""
+    try:
+        # Determinar el resultado basado en si se concedió acceso
+        resultado = "Éxito" if access_granted else "Fallo"
+        
+        # Insertar en historial_accesos
+        query = text("""
+            INSERT INTO historial_accesos 
+            (id_persona, id_dispositivo, fecha, resultado, confianza, foto_url)
+            VALUES 
+            (:id_persona, 3, CURRENT_TIMESTAMP, :resultado, :confianza, :foto_url)
+        """)
+        
+        db.execute(query, {
+            "id_persona": id_persona,
+            "resultado": resultado,
+            "confianza": confidence,
+            "foto_url": photo_url
+        })
+        db.commit()
+        
+    except Exception as e:
+        logger.error(f"Error al registrar acceso: {str(e)}")
+        db.rollback()
+        raise
+
 @app.post("/get_embeddings", response_model=dict)
 async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """
@@ -67,6 +96,8 @@ async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depend
     Retorna:
     - embeddings: Vector de 512 dimensiones con las características faciales
     - matches: Posibles coincidencias en la base de datos
+    - access_granted: Si se concedió el acceso
+    - reason: Razón por la que se concedió o denegó el acceso
     """
     if not file.content_type.startswith('image/'):
         raise HTTPException(status_code=400, detail="El archivo debe ser una imagen")
@@ -81,6 +112,8 @@ async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depend
         detections = facenet.embeddings([img_array])
         
         if len(detections) == 0:
+            # Registrar intento fallido (sin rostro detectado)
+            register_access_attempt(db, None, None, False)
             raise HTTPException(status_code=400, detail="No se detectaron rostros en la imagen")
         
         embedding = detections[0].tolist()
@@ -88,21 +121,49 @@ async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depend
         # Buscar coincidencias en la BD
         matches = search_similar_embeddings(db, embedding)
         
-        # Formatear resultados
+        # Formatear resultados y verificar acceso
         formatted_matches = []
+        best_match = None
+        access_granted = False
+        reason = "No se encontraron coincidencias"
+        
+        if matches:
+            best_match = {
+                "id_persona": matches[0].id_persona,
+                "nombre_completo": f"{matches[0].nombre} {matches[0].apellido_paterno}",
+                "similitud": float(matches[0].similitud),
+                "id_vector": matches[0].id_vector,
+                "activo": matches[0].activo
+            }
+            
+            # Verificar si la persona está activa
+            if matches[0].activo:
+                access_granted = True
+                reason = "Persona reconocida y activa"
+            else:
+                reason = "Persona reconocida pero inactiva"
+        
         for match in matches:
             formatted_matches.append({
                 "id_persona": match.id_persona,
                 "nombre_completo": f"{match.nombre} {match.apellido_paterno}",
                 "similitud": float(match.similitud),
-                "id_vector": match.id_vector
+                "id_vector": match.id_vector,
+                "activo": match.activo
             })
+        
+        # Registrar el intento de acceso
+        confidence = float(matches[0].similitud) if matches else None
+        id_persona = matches[0].id_persona if matches else None
+        register_access_attempt(db, id_persona, confidence, access_granted)
         
         return {
             "message": "Embeddings generados correctamente",
             "embedding_size": len(embedding),
             "matches": formatted_matches,
-            "best_match": formatted_matches[0] if formatted_matches else None
+            "best_match": best_match,
+            "access_granted": access_granted,
+            "reason": reason
         }
     
     except HTTPException:
