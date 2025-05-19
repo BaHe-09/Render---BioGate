@@ -1,14 +1,13 @@
-# main.py
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import bcrypt
 from pydantic import BaseModel, EmailStr, validator
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 import logging
 from fastapi.middleware.cors import CORSMiddleware
-from database import get_db  # Importamos desde tu archivo database.py
+from database import get_db
 
 # Configuración básica de logging
 logging.basicConfig(level=logging.INFO)
@@ -51,6 +50,20 @@ class UsuarioRegistro(BaseModel):
     persona: RegistroPersona
     cuenta: RegistroCuenta
 
+class HistorialAcceso(BaseModel):
+    id_acceso: int
+    nombre_completo: str
+    fecha: str
+    resultado: str
+    dispositivo: str
+    foto_url: Optional[str] = None
+
+class HistorialFiltrado(BaseModel):
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
+    resultado: Optional[str] = None
+    nombre: Optional[str] = None
+
 # --- Endpoints ---
 @app.get("/")
 def read_root():
@@ -60,6 +73,7 @@ def read_root():
         "endpoints": {
             "login": "POST /login/",
             "register": "POST /registrar/",
+            "historial": "GET /historial-accesos/",
             "generate_password": "GET /generate-password/",
             "docs": "/docs"
         }
@@ -152,7 +166,7 @@ def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
             bcrypt.gensalt()
         ).decode('utf-8')
 
-        # Insertar persona (SQLAlchemy automáticamente maneja la transacción)
+        # Insertar persona
         result_persona = db.execute(
             text("""
                 INSERT INTO personas (
@@ -200,7 +214,7 @@ def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
             }
         )
 
-        db.commit()  # Confirmar ambas operaciones juntas
+        db.commit()
         logger.info(f"Usuario administrador registrado exitosamente: {usuario.persona.email}")
 
         return {
@@ -221,6 +235,122 @@ def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error interno del servidor"
         )
+
+@app.get("/historial-accesos/", response_model=List[HistorialAcceso])
+def obtener_historial_accesos(
+    filtros: HistorialFiltrado = Depends(),
+    limite: int = Query(20, gt=0, le=100),
+    db: Session = Depends(get_db)
+):
+    try:
+        query_params = {
+            "limite": limite,
+            "nombre": f"%{filtros.nombre}%" if filtros.nombre else "%"
+        }
+
+        # Construir la consulta base
+        query = text("""
+            SELECT 
+                ha.id_acceso,
+                CONCAT(p.nombre, ' ', p.apellido_paterno) as nombre_completo,
+                TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI AM') as fecha,
+                CASE 
+                    WHEN ha.resultado = 'Éxito' THEN 'PERMITIDO'
+                    ELSE 'DENEGADO'
+                END as resultado,
+                COALESCE(d.nombre, 'Desconocido') as dispositivo,
+                ha.foto_url
+            FROM historial_accesos ha
+            LEFT JOIN personas p ON ha.id_persona = p.id_persona
+            LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
+            WHERE CONCAT(p.nombre, ' ', p.apellido_paterno) LIKE :nombre
+        """)
+
+        # Añadir filtros de fecha si están presentes
+        if filtros.fecha_inicio and filtros.fecha_fin:
+            query = text(str(query) + " AND ha.fecha BETWEEN :fecha_inicio AND :fecha_fin")
+            query_params.update({
+                "fecha_inicio": filtros.fecha_inicio,
+                "fecha_fin": filtros.fecha_fin
+            })
+        
+        # Añadir filtro de resultado si está presente
+        if filtros.resultado:
+            if filtros.resultado.upper() == 'PERMITIDO':
+                query = text(str(query) + " AND ha.resultado = 'Éxito'")
+            elif filtros.resultado.upper() == 'DENEGADO':
+                query = text(str(query) + " AND ha.resultado != 'Éxito'")
+
+        # Ordenar y limitar
+        query = text(str(query) + " ORDER BY ha.fecha DESC LIMIT :limite")
+
+        result = db.execute(query, query_params)
+        historial = result.fetchall()
+        
+        return [{
+            "id_acceso": item.id_acceso,
+            "nombre_completo": item.nombre_completo,
+            "fecha": item.fecha,
+            "resultado": item.resultado,
+            "dispositivo": item.dispositivo,
+            "foto_url": item.foto_url
+        } for item in historial]
+        
+    except Exception as e:
+        logger.error(f"Error al obtener historial: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Error al obtener el historial de accesos"
+        )
+
+@app.get("/historial-accesos/{id_acceso}", response_model=HistorialAcceso)
+def obtener_detalle_acceso(id_acceso: int, db: Session = Depends(get_db)):
+    try:
+        query = text("""
+            SELECT 
+                ha.id_acceso,
+                CONCAT(p.nombre, ' ', p.apellido_paterno) as nombre_completo,
+                TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI AM') as fecha,
+                CASE 
+                    WHEN ha.resultado = 'Éxito' THEN 'PERMITIDO'
+                    ELSE 'DENEGADO'
+                END as resultado,
+                COALESCE(d.nombre, 'Desconocido') as dispositivo,
+                ha.foto_url,
+                ha.confianza,
+                ha.metadatos
+            FROM historial_accesos ha
+            LEFT JOIN personas p ON ha.id_persona = p.id_persona
+            LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
+            WHERE ha.id_acceso = :id_acceso
+        """)
+        result = db.execute(query, {"id_acceso": id_acceso})
+        acceso = result.fetchone()
+
+        if not acceso:
+            raise HTTPException(
+                status_code=404,
+                detail="Registro de acceso no encontrado"
+            )
+
+        return {
+            "id_acceso": acceso.id_acceso,
+            "nombre_completo": acceso.nombre_completo,
+            "fecha": acceso.fecha,
+            "resultado": acceso.resultado,
+            "dispositivo": acceso.dispositivo,
+            "foto_url": acceso.foto_url
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al obtener detalle de acceso: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Error al obtener el detalle del acceso"
+        )
+
 @app.get("/generate-password/")
 def generate_password(password: str):
     """Genera un hash bcrypt para contraseñas (uso en desarrollo)"""
