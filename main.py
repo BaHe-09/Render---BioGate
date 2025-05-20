@@ -64,11 +64,18 @@ class HistorialFiltrado(BaseModel):
     resultado: Optional[str] = None
     nombre: Optional[str] = None
 
-class Persona(BaseModel):
+class PersonaResponse(BaseModel):
     id_persona: int
-    nombre_completo: str
-    correo_electronico: Optional[str]
+    nombre: str
+    apellido_paterno: str
+    apellido_materno: Optional[str] = None
+    correo_electronico: Optional[str] = None
+    telefono: Optional[str] = None
     activo: bool
+    fecha_registro: datetime
+
+    class Config:
+        from_attributes = True  # Esto permite la conversión desde ORM models
 
 class ActualizarEstadoPersona(BaseModel):
     activo: bool
