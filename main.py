@@ -370,15 +370,19 @@ def generate_password(password: str):
         "warning": "No usar en producción"
     }
 
-@app.get("/personas/", response_model=List[Persona])
+@app.get("/personas/", response_model=List[PersonaResponse])
 def obtener_personas(db: Session = Depends(get_db)):
     try:
         query = text("""
             SELECT 
                 id_persona,
-                CONCAT(nombre, ' ', apellido_paterno) as nombre_completo,
+                nombre,
+                apellido_paterno,
+                apellido_materno,
                 correo_electronico,
-                activo
+                telefono,
+                activo,
+                fecha_registro
             FROM personas
             ORDER BY nombre, apellido_paterno
         """)
@@ -387,9 +391,13 @@ def obtener_personas(db: Session = Depends(get_db)):
         
         return [{
             "id_persona": p.id_persona,
-            "nombre_completo": p.nombre_completo,
+            "nombre": p.nombre,
+            "apellido_paterno": p.apellido_paterno,
+            "apellido_materno": p.apellido_materno,
             "correo_electronico": p.correo_electronico,
-            "activo": p.activo
+            "telefono": p.telefono,
+            "activo": p.activo,
+            "fecha_registro": p.fecha_registro
         } for p in personas]
         
     except Exception as e:
