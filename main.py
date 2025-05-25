@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 from database import get_db
 from sqlalchemy import text
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+import pytz
 
 app = FastAPI(
     title="FaceNet Embeddings API",
@@ -64,16 +65,21 @@ def register_access_attempt(db: Session, id_persona: Optional[int], confidence: 
         # Determinar el resultado basado en si se concedió acceso
         resultado = "Éxito" if access_granted else "Fallo"
         
-        # Insertar en historial_accesos
+        # Obtener la hora actual en la zona horaria de México
+        timezone_mx = pytz.timezone('America/Mexico_City')
+        now_mx = datetime.now(timezone_mx)
+        
+        # Insertar en historial_accesos con la hora de México
         query = text("""
             INSERT INTO historial_accesos 
             (id_persona, id_dispositivo, fecha, resultado, confianza, foto_url)
             VALUES 
-            (:id_persona, 3, CURRENT_TIMESTAMP, :resultado, :confianza, :foto_url)
+            (:id_persona, 3, :fecha, :resultado, :confianza, :foto_url)
         """)
         
         db.execute(query, {
             "id_persona": id_persona,
+            "fecha": now_mx,
             "resultado": resultado,
             "confianza": confidence,
             "foto_url": photo_url
