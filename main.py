@@ -60,23 +60,24 @@ def search_similar_embeddings(db: Session, embedding: List[float], threshold: fl
 
 def register_access_attempt(db: Session, id_persona: Optional[int], confidence: Optional[float], 
                            access_granted: bool, photo_url: Optional[str] = None):
+    """Registra un intento de acceso en el historial"""
     try:
         timezone_mx = pytz.timezone('America/Mexico_City')
         now_mx = datetime.now(timezone_mx)
         
-        # Convertir a string con offset explícito
-        fecha_mx = now_mx.strftime('%Y-%m-%d %H:%M:%S-06:00')  # Ajusta -05:00 en horario de verano
+        # Formatear como string ISO incluyendo la zona horaria
+        fecha_mx = now_mx.isoformat()
         
         query = text("""
             INSERT INTO historial_accesos 
             (id_persona, id_dispositivo, fecha, resultado, confianza, foto_url)
             VALUES 
-            (:id_persona, 3, :fecha::timestamp with time zone, :resultado, :confianza, :foto_url)
+            (:id_persona, 3, :fecha, :resultado, :confianza, :foto_url)
         """)
         
         db.execute(query, {
             "id_persona": id_persona,
-            "fecha": fecha_mx,
+            "fecha": fecha_mx,  # Envía como string ISO con zona horaria
             "resultado": "Éxito" if access_granted else "Fallo",
             "confianza": confidence,
             "foto_url": photo_url
