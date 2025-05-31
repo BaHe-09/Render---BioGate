@@ -239,14 +239,16 @@ async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depend
                 hora_registro_str = now_mx.strftime("%H:%M:%S")
                 
                 # Obtener horario y determinar estado
-                hora_entrada, hora_salida, tolerancia = obtener_horario_persona(db, matches[0].id_persona)
+                hora_entrada, hora_salida, tolerancia, dias_laborales = obtener_horario_persona(db, matches[0].id_persona, now_mx)
                 estado_registro = determinar_estado_registro(
-                    now_mx.time(), hora_entrada, hora_salida, tolerancia)
+                    now_mx.time(), hora_entrada, hora_salida, 
+                    tolerancia, dias_laborales, now_mx.weekday())
                 
                 horario_info = {
-                    "hora_entrada": hora_entrada.strftime("%H:%M"),
-                    "hora_salida": hora_salida.strftime("%H:%M"),
+                    "hora_entrada": hora_entrada.strftime("%H:%M") if hora_entrada else "N/A",
+                    "hora_salida": hora_salida.strftime("%H:%M") if hora_salida else "N/A",
                     "tolerancia_retraso": tolerancia,
+                    "dias_laborales": dias_laborales,
                     "hora_registro": now_mx.strftime("%H:%M")  # Hora en formato corto
                 }
                 
@@ -266,7 +268,8 @@ async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depend
             "access_granted": access_granted,
             "reason": reason,
             "estado_registro": estado_registro,
-            "hora_registro": hora_registro_str or datetime.now(pytz.timezone('America/Mexico_City')).strftime("%H:%M:%S")
+            "hora_registro": hora_registro_str,
+            "dia_semana": now_mx.strftime("%A") if matches else None
         }
         
         if best_match:
