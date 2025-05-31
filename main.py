@@ -58,11 +58,14 @@ def search_similar_embeddings(db: Session, embedding: List[float], threshold: fl
         logger.error(f"Error en búsqueda de embeddings: {str(e)}")
         raise
 
-def obtener_horario_persona(db: Session, id_persona: int):
-    """Obtiene el horario laboral de una persona desde la BD"""
+def obtener_horario_persona(db: Session, id_persona: int, fecha_actual: datetime):
+    """Obtiene el horario laboral de una persona desde la BD considerando el día de la semana"""
     try:
+        # Primero obtener el día de la semana (0=lunes, 6=domingo)
+        dia_semana = fecha_actual.weekday()
+        
         query = text("""
-            SELECT hora_entrada, hora_salida, tolerancia_retraso
+            SELECT hora_entrada, hora_salida, tolerancia_retraso, dias_laborales
             FROM horarios_persona
             WHERE id_persona = :id_persona
         """)
@@ -70,26 +73,41 @@ def obtener_horario_persona(db: Session, id_persona: int):
         horario = result.fetchone()
         
         if not horario:
-            # Horario por defecto si no está configurado
-            return time(8, 0), time(17, 0), 10  # 8:00 AM a 5:00 PM, 10 mins tolerancia
+            # Horario por defecto si no está configurado (L-V de 8am a 5pm)
+            return time(8, 0), time(17, 0), 10, 'L-V'
         
-        return horario.hora_entrada, horario.hora_salida, horario.tolerancia_retraso
+        # Verificar si es día laboral
+        dias_validos = {
+            'L-V': [0, 1, 2, 3, 4],    # Lunes a Viernes
+            'L-S': [0, 1, 2, 3, 4, 5],  # Lunes a Sábado
+            'L-D': [0, 1, 2, 3, 4, 5, 6] # Lunes a Domingo
+        }
+        
+        dias_permitidos = dias_validos.get(horario.dias_laborales, [0, 1, 2, 3, 4])
+        
+        if dia_semana not in dias_permitidos:
+            # Si no es día laboral, considerar como horas extras
+            return None, None, 0, horario.dias_laborales
+        
+        return horario.hora_entrada, horario.hora_salida, horario.tolerancia_retraso, horario.dias_laborales
         
     except Exception as e:
         logger.error(f"Error al obtener horario: {str(e)}")
-        return time(8, 0), time(17, 0), 10  # Valores por defecto en caso de error
+        return time(8, 0), time(17, 0), 10, 'L-V'  # Valores por defecto en caso de error
 
 def determinar_estado_registro(hora_registro: time, hora_entrada: time, 
-                              hora_salida: time, tolerancia: int) -> str:
+                             hora_salida: time, tolerancia: int, 
+                             dias_laborales: str, dia_actual: int) -> str:
     """
-    Determina el estado de registro basado en los horarios de la persona.
+    Determina el estado de registro considerando días laborales
     
-    Reglas:
-    - Si es antes de hora_entrada + tolerancia: "ENTRADA"
-    - Si es después de hora_entrada + tolerancia pero antes de hora_salida: "RETRASO"
-    - Si es dentro de 2 horas después de hora_salida: "SALIDA"
-    - Si es antes de hora_entrada o más de 2 horas después de hora_salida: "HORAS_EXTRAS"
+    Args:
+        dia_actual: 0=lunes, 6=domingo
     """
+    # Si no hay horario (día no laboral)
+    if hora_entrada is None or hora_salida is None:
+        return "HORAS_EXTRAS"
+    
     # Convertir a datetime para cálculos
     registro_dt = datetime.combine(datetime.today(), hora_registro)
     entrada_dt = datetime.combine(datetime.today(), hora_entrada)
@@ -100,73 +118,74 @@ def determinar_estado_registro(hora_registro: time, hora_entrada: time,
     hora_limite_salida = salida_dt + timedelta(hours=2)
     
     if registro_dt < entrada_dt:
-        # Registro antes del horario de entrada
         return "HORAS_EXTRAS"
     elif registro_dt <= hora_limite_entrada:
-        # Dentro del período de entrada normal
         return "ENTRADA"
     elif registro_dt <= salida_dt:
-        # Durante horario laboral pero con retraso
         return "RETRASO"
     elif registro_dt <= hora_limite_salida:
-        # Dentro de las 2 horas después de la salida
         return "SALIDA"
     else:
-        # Más de 2 horas después de la salida
         return "HORAS_EXTRAS"
 
 def register_access_attempt(db: Session, id_persona: Optional[int], confidence: Optional[float], 
-                           access_granted: bool, photo_url: Optional[str] = None):
-    """
-    Reglas:
-    - Si es antes de hora_entrada + tolerancia: "ENTRADA"
-    - Si es después de hora_entrada + tolerancia pero antes de hora_salida: "RETRASO"
-    - Si es dentro de 2 horas después de hora_salida: "SALIDA"
-    - Si es antes de hora_entrada o más de 2 horas después de hora_salida: "HORAS_EXTRAS"
-    """
+                         access_granted: bool, photo_url: Optional[str] = None):
+    """Registra un intento de acceso en el historial"""
     try:
         timezone_mx = pytz.timezone('America/Mexico_City')
         now_mx = datetime.now(timezone_mx)
         hora_actual_mx = now_mx.time()
+        dia_actual = now_mx.weekday()  # 0=lunes, 6=domingo
         
         estado_registro = "DESCONOCIDO"
         horas_extras = 0
+        es_dia_laboral = True
 
         if id_persona and access_granted:
-            hora_entrada, hora_salida, tolerancia = obtener_horario_persona(db, id_persona)
-            estado_registro = determinar_estado_registro(hora_actual_mx, hora_entrada, hora_salida, tolerancia)
+            hora_entrada, hora_salida, tolerancia, dias_laborales = obtener_horario_persona(db, id_persona, now_mx)
             
-            if estado_registro == "HORAS_EXTRAS":
-                registro_dt = datetime.combine(datetime.today(), hora_actual_mx)
-                entrada_dt = datetime.combine(datetime.today(), hora_entrada)
-                salida_dt = datetime.combine(datetime.today(), hora_salida)
+            if hora_entrada is None:  # No es día laboral
+                estado_registro = "HORAS_EXTRAS"
+                es_dia_laboral = False
+                # Calcular horas extras completas (jornada completa fuera de día laboral)
+                horas_extras = 8.0  # 8 horas extras por día no laboral
+            else:
+                estado_registro = determinar_estado_registro(
+                    hora_actual_mx, hora_entrada, hora_salida, 
+                    tolerancia, dias_laborales, dia_actual)
                 
-                if registro_dt < entrada_dt:
-                    horas_extras = (entrada_dt - registro_dt).total_seconds() / 3600
-                else:
-                    horas_extras = (registro_dt - (salida_dt + timedelta(hours=2))).total_seconds() / 3600
+                if estado_registro == "HORAS_EXTRAS":
+                    registro_dt = datetime.combine(datetime.today(), hora_actual_mx)
+                    entrada_dt = datetime.combine(datetime.today(), hora_entrada)
+                    salida_dt = datetime.combine(datetime.today(), hora_salida)
+                    
+                    if registro_dt < entrada_dt:
+                        horas_extras = (entrada_dt - registro_dt).total_seconds() / 3600
+                    else:
+                        horas_extras = (registro_dt - (salida_dt + timedelta(hours=2))).total_seconds() / 3600
         
         query = text("""
             INSERT INTO historial_accesos 
             (id_persona, id_dispositivo, fecha, resultado, confianza, 
-             foto_url, estado_registro, horas_extras)
+             foto_url, estado_registro, horas_extras, es_dia_laboral)
             VALUES 
             (:id_persona, 3, :fecha, :resultado, :confianza, 
-             :foto_url, :estado_registro, :horas_extras)
+             :foto_url, :estado_registro, :horas_extras, :es_dia_laboral)
         """)
         
         db.execute(query, {
             "id_persona": id_persona,
-            "fecha": now_mx,  # Usamos el datetime con zona horaria
+            "fecha": now_mx,
             "resultado": "Éxito" if access_granted else "Fallo",
             "confianza": confidence,
             "foto_url": photo_url,
             "estado_registro": estado_registro,
-            "horas_extras": round(horas_extras, 2)
+            "horas_extras": round(horas_extras, 2),
+            "es_dia_laboral": es_dia_laboral
         })
         db.commit()
         
-        return hora_actual_mx.strftime("%H:%M:%S")  # Devolvemos la hora formateada
+        return hora_actual_mx.strftime("%H:%M:%S")
     except Exception as e:
         logger.error(f"Error al registrar acceso: {str(e)}")
         db.rollback()
