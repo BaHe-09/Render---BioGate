@@ -117,30 +117,33 @@ def determinar_estado_registro(hora_registro: time, hora_entrada: time,
 
 def register_access_attempt(db: Session, id_persona: Optional[int], confidence: Optional[float], 
                            access_granted: bool, photo_url: Optional[str] = None):
-    """Registra un intento de acceso en el historial"""
+    """
+    Reglas:
+    - Si es antes de hora_entrada + tolerancia: "ENTRADA"
+    - Si es después de hora_entrada + tolerancia pero antes de hora_salida: "RETRASO"
+    - Si es dentro de 2 horas después de hora_salida: "SALIDA"
+    - Si es antes de hora_entrada o más de 2 horas después de hora_salida: "HORAS_EXTRAS"
+    """
     try:
         timezone_mx = pytz.timezone('America/Mexico_City')
         now_mx = datetime.now(timezone_mx)
-        hora_actual = now_mx.time()
+        hora_actual_mx = now_mx.time()
         
         estado_registro = "DESCONOCIDO"
-        horas_extras = 0  # Inicializar conteo de horas extras
-        
+        horas_extras = 0
+
         if id_persona and access_granted:
             hora_entrada, hora_salida, tolerancia = obtener_horario_persona(db, id_persona)
-            estado_registro = determinar_estado_registro(hora_actual, hora_entrada, hora_salida, tolerancia)
+            estado_registro = determinar_estado_registro(hora_actual_mx, hora_entrada, hora_salida, tolerancia)
             
-            # Calcular horas extras si aplica
             if estado_registro == "HORAS_EXTRAS":
-                registro_dt = datetime.combine(datetime.today(), hora_actual)
+                registro_dt = datetime.combine(datetime.today(), hora_actual_mx)
                 entrada_dt = datetime.combine(datetime.today(), hora_entrada)
                 salida_dt = datetime.combine(datetime.today(), hora_salida)
                 
                 if registro_dt < entrada_dt:
-                    # Horas extras tempranas
                     horas_extras = (entrada_dt - registro_dt).total_seconds() / 3600
                 else:
-                    # Horas extras tardías (más de 2 horas después de salida)
                     horas_extras = (registro_dt - (salida_dt + timedelta(hours=2))).total_seconds() / 3600
         
         query = text("""
@@ -154,14 +157,16 @@ def register_access_attempt(db: Session, id_persona: Optional[int], confidence: 
         
         db.execute(query, {
             "id_persona": id_persona,
-            "fecha": now_mx,
+            "fecha": now_mx,  # Usamos el datetime con zona horaria
             "resultado": "Éxito" if access_granted else "Fallo",
             "confianza": confidence,
             "foto_url": photo_url,
             "estado_registro": estado_registro,
-            "horas_extras": round(horas_extras, 2)  # Redondear a 2 decimales
+            "horas_extras": round(horas_extras, 2)
         })
         db.commit()
+        
+        return hora_actual_mx.strftime("%H:%M:%S")  # Devolvemos la hora formateada
     except Exception as e:
         logger.error(f"Error al registrar acceso: {str(e)}")
         db.rollback()
@@ -169,12 +174,6 @@ def register_access_attempt(db: Session, id_persona: Optional[int], confidence: 
 
 @app.post("/get_embeddings", response_model=dict)
 async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """
-    Endpoint para obtener embeddings faciales y comparar con la base de datos
-    
-    Retorna:
-    - estado_registro: ENTRADA, SALIDA, RETRASO o HORAS_EXTRAS según el horario de la persona
-    """
     if not file.content_type.startswith('image/'):
         raise HTTPException(status_code=400, detail="El archivo debe ser una imagen")
     
@@ -201,6 +200,7 @@ async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depend
         reason = "No se encontraron coincidencias"
         estado_registro = None
         horario_info = None
+        hora_registro_str = None
         
         if matches:
             best_match = {
@@ -214,33 +214,40 @@ async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depend
                 access_granted = True
                 reason = "Persona reconocida y activa"
                 
+                # Obtener hora actual en México
+                timezone_mx = pytz.timezone('America/Mexico_City')
+                now_mx = datetime.now(timezone_mx)
+                hora_registro_str = now_mx.strftime("%H:%M:%S")
+                
                 # Obtener horario y determinar estado
                 hora_entrada, hora_salida, tolerancia = obtener_horario_persona(db, matches[0].id_persona)
-                timezone_mx = pytz.timezone('America/Mexico_City')
-                hora_actual = datetime.now(timezone_mx).time()
                 estado_registro = determinar_estado_registro(
-                    hora_actual, hora_entrada, hora_salida, tolerancia)
+                    now_mx.time(), hora_entrada, hora_salida, tolerancia)
                 
                 horario_info = {
                     "hora_entrada": hora_entrada.strftime("%H:%M"),
                     "hora_salida": hora_salida.strftime("%H:%M"),
                     "tolerancia_retraso": tolerancia,
-                    "hora_registro": hora_actual.strftime("%H:%M")
+                    "hora_registro": now_mx.strftime("%H:%M")  # Hora en formato corto
                 }
+                
+                # Registrar el acceso (devuelve la hora usada)
+                hora_registro_used = register_access_attempt(
+                    db, matches[0].id_persona, 
+                    float(matches[0].similitud), 
+                    access_granted)
+                
+                # Asegurarnos de usar la misma hora en toda la respuesta
+                hora_registro_str = hora_registro_used or hora_registro_str
             else:
                 reason = "Persona reconocida pero inactiva"
-        
-        # Registrar el intento de acceso
-        confidence = float(matches[0].similitud) if matches else None
-        id_persona = matches[0].id_persona if matches else None
-        register_access_attempt(db, id_persona, confidence, access_granted)
         
         response_data = {
             "message": "Embeddings generados correctamente",
             "access_granted": access_granted,
             "reason": reason,
             "estado_registro": estado_registro,
-            "hora_registro": datetime.now().strftime("%H:%M:%S")
+            "hora_registro": hora_registro_str or datetime.now(pytz.timezone('America/Mexico_City')).strftime("%H:%M:%S")
         }
         
         if best_match:
