@@ -86,22 +86,34 @@ def determinar_estado_registro(hora_registro: time, hora_entrada: time,
     
     Reglas:
     - Si es antes de hora_entrada + tolerancia: "ENTRADA"
-    - Si es después de hora_entrada + tolerancia pero en horario laboral: "RETRASO"
-    - Si es después de hora_salida: "SALIDA"
-    - Si es fuera del horario laboral: "HORAS_EXTRAS"
+    - Si es después de hora_entrada + tolerancia pero antes de hora_salida: "RETRASO"
+    - Si es dentro de 2 horas después de hora_salida: "SALIDA"
+    - Si es antes de hora_entrada o más de 2 horas después de hora_salida: "HORAS_EXTRAS"
     """
-    # Calcular hora límite para entrada normal
-    hora_limite_entrada = (
-        datetime.combine(datetime.today(), hora_entrada) + 
-        timedelta(minutes=tolerancia)
-    ).time()
+    # Convertir a datetime para cálculos
+    registro_dt = datetime.combine(datetime.today(), hora_registro)
+    entrada_dt = datetime.combine(datetime.today(), hora_entrada)
+    salida_dt = datetime.combine(datetime.today(), hora_salida)
     
-    if hora_registro <= hora_limite_entrada:
+    # Calcular límites
+    hora_limite_entrada = entrada_dt + timedelta(minutes=tolerancia)
+    hora_limite_salida = salida_dt + timedelta(hours=2)
+    
+    if registro_dt < entrada_dt:
+        # Registro antes del horario de entrada
+        return "HORAS_EXTRAS"
+    elif registro_dt <= hora_limite_entrada:
+        # Dentro del período de entrada normal
         return "ENTRADA"
-    elif hora_registro <= hora_salida:
+    elif registro_dt <= salida_dt:
+        # Durante horario laboral pero con retraso
         return "RETRASO"
-    else:
+    elif registro_dt <= hora_limite_salida:
+        # Dentro de las 2 horas después de la salida
         return "SALIDA"
+    else:
+        # Más de 2 horas después de la salida
+        return "HORAS_EXTRAS"
 
 def register_access_attempt(db: Session, id_persona: Optional[int], confidence: Optional[float], 
                            access_granted: bool, photo_url: Optional[str] = None):
@@ -111,17 +123,33 @@ def register_access_attempt(db: Session, id_persona: Optional[int], confidence: 
         now_mx = datetime.now(timezone_mx)
         hora_actual = now_mx.time()
         
-        # Determinar el estado del registro
         estado_registro = "DESCONOCIDO"
+        horas_extras = 0  # Inicializar conteo de horas extras
+        
         if id_persona and access_granted:
             hora_entrada, hora_salida, tolerancia = obtener_horario_persona(db, id_persona)
             estado_registro = determinar_estado_registro(hora_actual, hora_entrada, hora_salida, tolerancia)
+            
+            # Calcular horas extras si aplica
+            if estado_registro == "HORAS_EXTRAS":
+                registro_dt = datetime.combine(datetime.today(), hora_actual)
+                entrada_dt = datetime.combine(datetime.today(), hora_entrada)
+                salida_dt = datetime.combine(datetime.today(), hora_salida)
+                
+                if registro_dt < entrada_dt:
+                    # Horas extras tempranas
+                    horas_extras = (entrada_dt - registro_dt).total_seconds() / 3600
+                else:
+                    # Horas extras tardías (más de 2 horas después de salida)
+                    horas_extras = (registro_dt - (salida_dt + timedelta(hours=2))).total_seconds() / 3600
         
         query = text("""
             INSERT INTO historial_accesos 
-            (id_persona, id_dispositivo, fecha, resultado, confianza, foto_url, estado_registro)
+            (id_persona, id_dispositivo, fecha, resultado, confianza, 
+             foto_url, estado_registro, horas_extras)
             VALUES 
-            (:id_persona, 3, :fecha, :resultado, :confianza, :foto_url, :estado_registro)
+            (:id_persona, 3, :fecha, :resultado, :confianza, 
+             :foto_url, :estado_registro, :horas_extras)
         """)
         
         db.execute(query, {
@@ -130,7 +158,8 @@ def register_access_attempt(db: Session, id_persona: Optional[int], confidence: 
             "resultado": "Éxito" if access_granted else "Fallo",
             "confianza": confidence,
             "foto_url": photo_url,
-            "estado_registro": estado_registro
+            "estado_registro": estado_registro,
+            "horas_extras": round(horas_extras, 2)  # Redondear a 2 decimales
         })
         db.commit()
     except Exception as e:
