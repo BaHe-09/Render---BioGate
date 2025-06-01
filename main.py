@@ -103,6 +103,15 @@ class PersonaResponse(BaseModel):
 class ActualizarEstadoPersona(BaseModel):
     activo: bool
 
+class ReporteCreate(BaseModel):
+    titulo: str
+    descripcion: str
+    tipo_reporte: str = Field(..., regex="^(Error del sistema|Fallo autenticación|Fallo de dispositivo|Acceso no autorizado|Horario irregular|Otros)$")
+    severidad: Optional[str] = Field(None, regex="^(Baja|Media|Alta|Crítica)$")
+    id_acceso_relacionado: Optional[int] = None
+    id_dispositivo: Optional[int] = None
+    etiquetas: Optional[dict] = None
+    evidencias: Optional[List[str]] = None
 # --- Endpoints ---
 @app.get("/")
 def read_root():
@@ -521,6 +530,82 @@ def actualizar_estado_persona(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al actualizar el estado"
+        )
+
+@app.post("/reportes/", status_code=status.HTTP_201_CREATED)
+def crear_reporte(
+    reporte: ReporteCreate,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Validar que el acceso relacionado existe si se proporciona
+        if reporte.id_acceso_relacionado:
+            acceso_existe = db.execute(
+                text("SELECT 1 FROM historial_accesos WHERE id_acceso = :id"),
+                {"id": reporte.id_acceso_relacionado}
+            ).scalar()
+            if not acceso_existe:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="El acceso relacionado no existe"
+                )
+
+        # Validar que el dispositivo existe si se proporciona
+        if reporte.id_dispositivo:
+            dispositivo_existe = db.execute(
+                text("SELECT 1 FROM dispositivos WHERE id_dispositivo = :id"),
+                {"id": reporte.id_dispositivo}
+            ).scalar()
+            if not dispositivo_existe:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="El dispositivo no existe"
+                )
+
+        # Insertar el reporte en la base de datos
+        result = db.execute(
+            text("""
+                INSERT INTO reportes (
+                    titulo, descripcion, tipo_reporte, severidad, estado,
+                    fecha_generacion, id_acceso_relacionado, id_dispositivo,
+                    etiquetas, evidencias
+                )
+                VALUES (
+                    :titulo, :descripcion, :tipo_reporte, :severidad, 'Abierto',
+                    CURRENT_TIMESTAMP, :id_acceso_relacionado, :id_dispositivo,
+                    :etiquetas, :evidencias
+                )
+                RETURNING id_reporte
+            """),
+            {
+                "titulo": reporte.titulo,
+                "descripcion": reporte.descripcion,
+                "tipo_reporte": reporte.tipo_reporte,
+                "severidad": reporte.severidad,
+                "id_acceso_relacionado": reporte.id_acceso_relacionado,
+                "id_dispositivo": reporte.id_dispositivo,
+                "etiquetas": json.dumps(reporte.etiquetas) if reporte.etiquetas else None,
+                "evidencias": reporte.evidencias
+            }
+        )
+        id_reporte = result.scalar_one()
+        db.commit()
+
+        return {
+            "status": "success",
+            "id_reporte": id_reporte,
+            "message": "Reporte creado exitosamente"
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error al crear reporte: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno al crear el reporte"
         )
 
 @app.get("/health")
