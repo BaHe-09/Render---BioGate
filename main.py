@@ -269,10 +269,10 @@ def obtener_historial_accesos(
         query = text("""
             SELECT 
                 ha.id_acceso,
-                CONCAT(p.nombre, ' ', p.apellido_paterno) as nombre_completo,
+                CONCAT(p.nombre, ' ', p.apellido_paterno, ' ', p.apellido_materno, ) as nombre_completo,
                 CASE 
                     WHEN p.nombre IS NULL THEN 'DESCONOCIDO'
-                    ELSE CONCAT(p.nombre, ' ', p.apellido_paterno)
+                    ELSE CONCAT(p.nombre, ' ', p.apellido_paterno, ' ', p.apellido_materno)
                 END as nombre_completo,
                 TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI AM') as fecha,
                 CASE 
