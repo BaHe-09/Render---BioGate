@@ -129,7 +129,7 @@ def determinar_estado_registro(hora_registro: time, hora_entrada: time,
         return "HORAS_EXTRAS"
 
 def register_access_attempt(db: Session, id_persona: Optional[int], confidence: Optional[float], 
-                         access_granted: bool, photo_url: Optional[str] = None):
+                         access_granted: bool, photo_url: Optional[str] = None, reason: Optional[str] = None):
     """Registra un intento de acceso en el historial"""
     try:
         timezone_mx = pytz.timezone('America/Mexico_City')
@@ -147,8 +147,7 @@ def register_access_attempt(db: Session, id_persona: Optional[int], confidence: 
             if hora_entrada is None:  # No es día laboral
                 estado_registro = "HORAS_EXTRAS"
                 es_dia_laboral = False
-                # Calcular horas extras completas (jornada completa fuera de día laboral)
-                horas_extras = 8.0  # 8 horas extras por día no laboral
+                horas_extras = 8.0
             else:
                 estado_registro = determinar_estado_registro(
                     hora_actual_mx, hora_entrada, hora_salida, 
@@ -167,10 +166,10 @@ def register_access_attempt(db: Session, id_persona: Optional[int], confidence: 
         query = text("""
             INSERT INTO historial_accesos 
             (id_persona, id_dispositivo, fecha, resultado, confianza, 
-             foto_url, estado_registro, horas_extras, es_dia_laboral)
+             foto_url, estado_registro, horas_extras, es_dia_laboral, razon)
             VALUES 
             (:id_persona, 3, :fecha, :resultado, :confianza, 
-             :foto_url, :estado_registro, :horas_extras, :es_dia_laboral)
+             :foto_url, :estado_registro, :horas_extras, :es_dia_laboral, :razon)
         """)
         
         db.execute(query, {
@@ -181,7 +180,8 @@ def register_access_attempt(db: Session, id_persona: Optional[int], confidence: 
             "foto_url": photo_url,
             "estado_registro": estado_registro,
             "horas_extras": round(horas_extras, 2),
-            "es_dia_laboral": es_dia_laboral
+            "es_dia_laboral": es_dia_laboral,
+            "razon": reason  # Nueva columna
         })
         db.commit()
         
@@ -193,6 +193,16 @@ def register_access_attempt(db: Session, id_persona: Optional[int], confidence: 
 
 @app.post("/get_embeddings", response_model=dict)
 async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    Endpoint para obtener embeddings faciales y comparar con la base de datos
+    
+    Retorna:
+    - access_granted: Booleano indicando si se concedió acceso
+    - reason: Razón del resultado (se almacena en BD)
+    - estado_registro: ENTRADA, RETRASO, SALIDA o HORAS_EXTRAS
+    - best_match: Información de la persona reconocida (si aplica)
+    - horario_info: Detalles del horario (si aplica)
+    """
     if not file.content_type.startswith('image/'):
         raise HTTPException(status_code=400, detail="El archivo debe ser una imagen")
     
@@ -202,36 +212,36 @@ async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depend
         img = Image.open(io.BytesIO(contents))
         img_array = preprocess_image(img)
         
-        # Obtener hora actual en México (para usar en todo el proceso)
+        # Obtener hora actual en México
         timezone_mx = pytz.timezone('America/Mexico_City')
         now_mx = datetime.now(timezone_mx)
         hora_registro_str = now_mx.strftime("%H:%M:%S")
         
-        # Obtener embeddings
+        # Obtener embeddings faciales
         detections = facenet.embeddings([img_array])
         
         if len(detections) == 0:
-            register_access_attempt(db, None, None, False)
+            # Registrar intento fallido (sin rostros detectados)
+            register_access_attempt(
+                db=db,
+                id_persona=None,
+                confidence=None,
+                access_granted=False,
+                photo_url=None,
+                reason="No se detectaron rostros en la imagen"
+            )
             raise HTTPException(status_code=400, detail="No se detectaron rostros en la imagen")
         
         embedding = detections[0].tolist()
+        
+        # Buscar coincidencias en la BD
         matches = search_similar_embeddings(db, embedding)
-        
-        # Registrar acceso (incluso si no hay matches)
-        confidence = float(matches[0].similitud) if matches else None
-        id_persona = matches[0].id_persona if matches else None
-        access_granted = matches and matches[0].activo if matches else False
-        
-        # Registrar el intento de acceso
-        hora_registro_used = register_access_attempt(
-            db, id_persona, confidence, access_granted)
         
         # Procesar coincidencias
         formatted_matches = []
         best_match = None
-        reason = "No se encontraron coincidencias" if not matches else (
-            "Persona reconocida y activa" if access_granted else "Persona reconocida pero inactiva"
-        )
+        access_granted = False
+        reason = "No se encontraron coincidencias"
         estado_registro = None
         horario_info = None
         
@@ -243,12 +253,19 @@ async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depend
                 "activo": matches[0].activo
             }
             
+            # Determinar razón basada en estado activo/inactivo
             if matches[0].activo:
-                # Obtener horario y determinar estado
-                hora_entrada, hora_salida, tolerancia, dias_laborales = obtener_horario_persona(db, matches[0].id_persona, now_mx)
+                access_granted = True
+                reason = "Persona reconocida y activa"
+                
+                # Obtener horario y determinar estado de registro
+                hora_entrada, hora_salida, tolerancia, dias_laborales = obtener_horario_persona(
+                    db, matches[0].id_persona, now_mx
+                )
                 estado_registro = determinar_estado_registro(
                     now_mx.time(), hora_entrada, hora_salida, 
-                    tolerancia, dias_laborales, now_mx.weekday())
+                    tolerancia, dias_laborales, now_mx.weekday()
+                )
                 
                 horario_info = {
                     "hora_entrada": hora_entrada.strftime("%H:%M") if hora_entrada else "N/A",
@@ -257,13 +274,26 @@ async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depend
                     "dias_laborales": dias_laborales,
                     "hora_registro": now_mx.strftime("%H:%M")
                 }
+            else:
+                reason = "Persona reconocida pero inactiva"
         
+        # Registrar el intento de acceso (con o sin coincidencias)
+        register_access_attempt(
+            db=db,
+            id_persona=matches[0].id_persona if matches else None,
+            confidence=float(matches[0].similitud) if matches else None,
+            access_granted=access_granted,
+            photo_url=None,  # Puedes ajustar esto si guardas las fotos
+            reason=reason
+        )
+        
+        # Preparar respuesta
         response_data = {
             "message": "Embeddings generados correctamente",
             "access_granted": access_granted,
             "reason": reason,
             "estado_registro": estado_registro,
-            "hora_registro": hora_registro_used or hora_registro_str,
+            "hora_registro": hora_registro_str,
             "dia_semana": now_mx.strftime("%A") if matches else None
         }
         
