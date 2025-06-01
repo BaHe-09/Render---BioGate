@@ -57,6 +57,12 @@ class HistorialAcceso(BaseModel):
     resultado: str
     dispositivo: str
     foto_url: Optional[str] = None
+    confianza: Optional[float] = None
+    estado_registro: Optional[str] = None
+    dia_semana: Optional[str] = None
+    razon: Optional[str] = None
+    horario_info: Optional[dict] = None
+    metadatos: Optional[dict] = None
 
 class HistorialFiltrado(BaseModel):
     fecha_inicio: Optional[str] = None
@@ -316,19 +322,32 @@ def obtener_detalle_acceso(id_acceso: int, db: Session = Depends(get_db)):
         query = text("""
             SELECT 
                 ha.id_acceso,
-                CONCAT(p.nombre, ' ', p.apellido_paterno) as nombre_completo,
-                TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI AM') as fecha,
+                CASE 
+                    WHEN p.nombre IS NULL THEN 'DESCONOCIDO'
+                    ELSE CONCAT(p.nombre, ' ', p.apellido_paterno)
+                END as nombre_completo,
+                TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI:SS AM') as fecha,  -- Formato con segundos
                 CASE 
                     WHEN ha.resultado = 'Éxito' THEN 'PERMITIDO'
                     ELSE 'DENEGADO'
                 END as resultado,
-                COALESCE(d.nombre, 'Desconocido') as dispositivo,
+                COALESCE(d.ubicacion, 'Desconocida') as dispositivo,
                 ha.foto_url,
                 ha.confianza,
+                ha.estado_registro,
+                TO_CHAR(ha.fecha, 'Day') as dia_semana,  -- Día de la semana
+                ha.razon,
+                jsonb_build_object(
+                    'hora_entrada', hp.hora_entrada,
+                    'hora_salida', hp.hora_salida,
+                    'tolerancia_retraso', hp.tolerancia_retraso,
+                    'dias_laborales', hp.dias_laborales
+                ) as horario_info,
                 ha.metadatos
             FROM historial_accesos ha
             LEFT JOIN personas p ON ha.id_persona = p.id_persona
             LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
+            LEFT JOIN horarios_persona hp ON p.id_persona = hp.id_persona
             WHERE ha.id_acceso = :id_acceso
         """)
         result = db.execute(query, {"id_acceso": id_acceso})
@@ -343,10 +362,16 @@ def obtener_detalle_acceso(id_acceso: int, db: Session = Depends(get_db)):
         return {
             "id_acceso": acceso.id_acceso,
             "nombre_completo": acceso.nombre_completo,
-            "fecha": acceso.fecha,
+            "fecha": acceso.fecha,  # Ya contiene fecha y hora completa
             "resultado": acceso.resultado,
             "dispositivo": acceso.dispositivo,
-            "foto_url": acceso.foto_url
+            "foto_url": acceso.foto_url,
+            "confianza": acceso.confianza,
+            "estado_registro": acceso.estado_registro,
+            "dia_semana": acceso.dia_semana.strip(),  # Día de la semana sin espacios
+            "razon": acceso.razon,
+            "horario_info": acceso.horario_info,
+            "metadatos": acceso.metadatos
         }
         
     except HTTPException:
