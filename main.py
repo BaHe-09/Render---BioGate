@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status, QueryMore actions
+from fastapi import FastAPI, HTTPException, Depends, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import bcrypt
