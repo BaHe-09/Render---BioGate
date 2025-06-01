@@ -50,20 +50,26 @@ class UsuarioRegistro(BaseModel):
     persona: RegistroPersona
     cuenta: RegistroCuenta
 
+class DispositivoModel(BaseModel):
+    nombre: str
+    ubicacion: str
+
+class DetallesAccesoModel(BaseModel):
+    hora_entrada: str
+    hora_salida: str
+
 class HistorialAcceso(BaseModel):
     id_acceso: int
     nombre_completo: str
     fecha: str
-    resultado: str
-    dispositivo: str
-    foto_url: Optional[str] = None
-    confianza: Optional[float] = None
-    estado_registro: Optional[str] = None
-    dia_semana: Optional[str] = None
-    razon: Optional[str] = None
-    horario_info: Optional[dict] = None
-    metadatos: Optional[dict] = None
-
+    dispositivo: DispositivoModel
+    estatus: str
+    nivel_confianza: Optional[float] = None
+    razon: str
+    detalles_acceso: DetallesAccesoModel
+    es_dia_laboral: bool
+    estado_registro: str
+    
 class HistorialFiltrado(BaseModel):
     fecha_inicio: Optional[str] = None
     fecha_fin: Optional[str] = None
@@ -324,26 +330,23 @@ def obtener_detalle_acceso(id_acceso: int, db: Session = Depends(get_db)):
                 ha.id_acceso,
                 CASE 
                     WHEN p.nombre IS NULL THEN 'DESCONOCIDO'
-                    ELSE CONCAT(p.nombre, ' ', p.apellido_paterno)
+                    ELSE CONCAT(p.nombre, ' ', p.apellido_paterno, ' ', COALESCE(p.apellido_materno, ''))
                 END as nombre_completo,
-                TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI:SS AM') as fecha,  -- Formato con segundos
+                TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI:SS AM') as fecha,
+                d.nombre as nombre_dispositivo,
+                COALESCE(d.ubicacion, 'Desconocida') as ubicacion_dispositivo,
                 CASE 
                     WHEN ha.resultado = 'Éxito' THEN 'PERMITIDO'
                     ELSE 'DENEGADO'
-                END as resultado,
-                COALESCE(d.ubicacion, 'Desconocida') as dispositivo,
-                ha.foto_url,
-                ha.confianza,
-                ha.estado_registro,
-                TO_CHAR(ha.fecha, 'Day') as dia_semana,  -- Día de la semana
-                ha.razon,
+                END as estatus,
+                ha.confianza as nivel_confianza,
+                COALESCE(ha.razon, 'N/A') as razon,
                 jsonb_build_object(
-                    'hora_entrada', hp.hora_entrada,
-                    'hora_salida', hp.hora_salida,
-                    'tolerancia_retraso', hp.tolerancia_retraso,
-                    'dias_laborales', hp.dias_laborales
-                ) as horario_info,
-                ha.metadatos
+                    'hora_entrada', TO_CHAR(hp.hora_entrada, 'HH:MI:SS AM'),
+                    'hora_salida', TO_CHAR(hp.hora_salida, 'HH:MI:SS AM')
+                ) as detalles_acceso,
+                ha.es_dia_laboral,
+                ha.estado_registro
             FROM historial_accesos ha
             LEFT JOIN personas p ON ha.id_persona = p.id_persona
             LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
@@ -359,19 +362,27 @@ def obtener_detalle_acceso(id_acceso: int, db: Session = Depends(get_db)):
                 detail="Registro de acceso no encontrado"
             )
 
+        # Procesar detalles de acceso
+        hora_entrada = acceso.detalles_acceso.get('hora_entrada', 'N/A') if acceso.detalles_acceso else 'N/A'
+        hora_salida = acceso.detalles_acceso.get('hora_salida', 'N/A') if acceso.detalles_acceso else 'N/A'
+
         return {
             "id_acceso": acceso.id_acceso,
             "nombre_completo": acceso.nombre_completo,
-            "fecha": acceso.fecha,  # Ya contiene fecha y hora completa
-            "resultado": acceso.resultado,
-            "dispositivo": acceso.dispositivo,
-            "foto_url": acceso.foto_url,
-            "confianza": acceso.confianza,
-            "estado_registro": acceso.estado_registro,
-            "dia_semana": acceso.dia_semana.strip(),  # Día de la semana sin espacios
+            "fecha": acceso.fecha,
+            "dispositivo": {
+                "nombre": acceso.nombre_dispositivo,
+                "ubicacion": acceso.ubicacion_dispositivo
+            },
+            "estatus": acceso.estatus,
+            "nivel_confianza": acceso.nivel_confianza,
             "razon": acceso.razon,
-            "horario_info": acceso.horario_info,
-            "metadatos": acceso.metadatos
+            "detalles_acceso": {
+                "hora_entrada": hora_entrada,
+                "hora_salida": hora_salida
+            },
+            "es_dia_laboral": acceso.es_dia_laboral,
+            "estado_registro": acceso.estado_registro
         }
         
     except HTTPException:
