@@ -154,14 +154,17 @@ def register_access_attempt(db: Session, id_persona: Optional[int], confidence: 
                     tolerancia, dias_laborales, dia_actual)
                 
                 if estado_registro == "HORAS_EXTRAS":
-                    registro_dt = datetime.combine(datetime.today(), hora_actual_mx)
-                    entrada_dt = datetime.combine(datetime.today(), hora_entrada)
-                    salida_dt = datetime.combine(datetime.today(), hora_salida)
+                    registro_dt = datetime.combine(now_mx.date(), hora_actual_mx).replace(tzinfo=timezone_mx)
+                    entrada_dt = datetime.combine(now_mx.date(), hora_entrada).replace(tzinfo=timezone_mx)
+                    salida_dt = datetime.combine(now_mx.date(), hora_salida).replace(tzinfo=timezone_mx)
                     
                     if registro_dt < entrada_dt:
                         horas_extras = (entrada_dt - registro_dt).total_seconds() / 3600
                     else:
                         horas_extras = (registro_dt - (salida_dt + timedelta(hours=2))).total_seconds() / 3600
+        
+        # Asegurarse de que la fecha se guarde como string con zona horaria
+        fecha_con_zona = now_mx.isoformat()
         
         query = text("""
             INSERT INTO historial_accesos 
@@ -174,14 +177,14 @@ def register_access_attempt(db: Session, id_persona: Optional[int], confidence: 
         
         db.execute(query, {
             "id_persona": id_persona,
-            "fecha": now_mx,
+            "fecha": fecha_con_zona,  # Usar el string ISO con zona horaria
             "resultado": "Éxito" if access_granted else "Fallo",
             "confianza": confidence,
             "foto_url": photo_url,
             "estado_registro": estado_registro,
             "horas_extras": round(horas_extras, 2),
             "es_dia_laboral": es_dia_laboral,
-            "razon": reason  # Nueva columna
+            "razon": reason
         })
         db.commit()
         
