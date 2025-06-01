@@ -73,6 +73,14 @@ class DetalleAccesoCompleto(BaseModel):
     razon: str
     foto_url: Optional[str] = None
 
+class HistorialAcceso(BaseModel):
+    id_acceso: int
+    nombre_completo: str
+    fecha: str
+    resultado: str
+    dispositivo: str
+    foto_url: Optional[str] = None
+
 class HistorialFiltrado(BaseModel):
     fecha_inicio: Optional[str] = None
     fecha_fin: Optional[str] = None
