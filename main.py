@@ -276,24 +276,32 @@ def obtener_historial_accesos(
             "nombre": f"%{filtros.nombre}%" if filtros.nombre else "%"
         }
 
-        # Consulta modificada para manejar casos sin nombre
         query = text("""
             SELECT 
                 ha.id_acceso,
                 CASE 
                     WHEN p.nombre IS NULL THEN 'DESCONOCIDO'
-                    ELSE CONCAT(p.nombre, ' ', p.apellido_paterno)
+                    ELSE CONCAT(p.nombre, ' ', p.apellido_paterno, ' ', COALESCE(p.apellido_materno, ''))
                 END as nombre_completo,
-                TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI AM') as fecha,
+                TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI:SS AM') as fecha,
+                d.nombre as nombre_dispositivo,
+                COALESCE(d.ubicacion, 'Desconocida') as ubicacion_dispositivo,
                 CASE 
                     WHEN ha.resultado = 'Éxito' THEN 'PERMITIDO'
                     ELSE 'DENEGADO'
-                END as resultado,
-                COALESCE(d.ubicacion, 'Desconocida') as dispositivo,
-                ha.foto_url
+                END as estatus,
+                ha.confianza as nivel_confianza,
+                COALESCE(ha.razon, 'N/A') as razon,
+                jsonb_build_object(
+                    'hora_entrada', TO_CHAR(hp.hora_entrada, 'HH:MI:SS AM'),
+                    'hora_salida', TO_CHAR(hp.hora_salida, 'HH:MI:SS AM')
+                ) as detalles_acceso,
+                ha.es_dia_laboral,
+                ha.estado_registro
             FROM historial_accesos ha
             LEFT JOIN personas p ON ha.id_persona = p.id_persona
             LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
+            LEFT JOIN horarios_persona hp ON p.id_persona = hp.id_persona
             WHERE 
                 CASE 
                     WHEN p.nombre IS NULL THEN 'DESCONOCIDO'
@@ -310,9 +318,19 @@ def obtener_historial_accesos(
             "id_acceso": item.id_acceso,
             "nombre_completo": item.nombre_completo,
             "fecha": item.fecha,
-            "resultado": item.resultado,
-            "dispositivo": item.dispositivo,
-            "foto_url": item.foto_url
+            "dispositivo": {
+                "nombre": item.nombre_dispositivo,
+                "ubicacion": item.ubicacion_dispositivo
+            },
+            "estatus": item.estatus,
+            "nivel_confianza": item.nivel_confianza,
+            "razon": item.razon,
+            "detalles_acceso": {
+                "hora_entrada": item.detalles_acceso.get('hora_entrada', 'N/A') if item.detalles_acceso else 'N/A',
+                "hora_salida": item.detalles_acceso.get('hora_salida', 'N/A') if item.detalles_acceso else 'N/A'
+            },
+            "es_dia_laboral": item.es_dia_laboral,
+            "estado_registro": item.estado_registro
         } for item in historial]
         
     except Exception as e:
