@@ -50,12 +50,27 @@ class UsuarioRegistro(BaseModel):
     persona: RegistroPersona
     cuenta: RegistroCuenta
 
-class HistorialAcceso(BaseModel):
+class DetalleDispositivo(BaseModel):
+    nombre: str
+    ubicacion: str
+
+class DetallesAcceso(BaseModel):
+    hora_entrada: str
+    hora_salida: str
+
+class DetalleAccesoCompleto(BaseModel):
     id_acceso: int
     nombre_completo: str
     fecha: str
-    resultado: str
-    dispositivo: str
+    horario: str
+    dispositivo: DetalleDispositivo
+    estatus: str
+    detalles_acceso: DetallesAcceso
+    dias_laborales: Optional[str] = None
+    nivel_confianza: Optional[float] = None
+    estado_registro: Optional[str] = None
+    es_dia_laboral: bool
+    razon: str
     foto_url: Optional[str] = None
 
 class HistorialFiltrado(BaseModel):
@@ -335,25 +350,33 @@ def obtener_historial_accesos(
             detail="Error al obtener el historial de accesos"
         )
         
-@app.get("/historial-accesos/{id_acceso}", response_model=HistorialAcceso)
+@app.get("/historial-accesos/{id_acceso}", response_model=DetalleAccesoCompleto)
 def obtener_detalle_acceso(id_acceso: int, db: Session = Depends(get_db)):
     try:
         query = text("""
             SELECT 
                 ha.id_acceso,
-                CONCAT(p.nombre, ' ', p.apellido_paterno) as nombre_completo,
-                TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI AM') as fecha,
+                CONCAT(p.nombre, ' ', p.apellido_paterno, ' ', COALESCE(p.apellido_materno, '')) as nombre_completo,
+                TO_CHAR(ha.fecha, 'DD/MM/YYYY') as fecha,
+                TO_CHAR(ha.fecha, 'HH:MI AM') as horario,
+                hp.hora_entrada,
+                hp.hora_salida,
+                hp.dias_laborales,
                 CASE 
                     WHEN ha.resultado = 'Éxito' THEN 'PERMITIDO'
                     ELSE 'DENEGADO'
-                END as resultado,
-                COALESCE(d.nombre, 'Desconocido') as dispositivo,
-                ha.foto_url,
+                END as estatus,
+                COALESCE(d.nombre, 'Desconocido') as nombre_dispositivo,
+                COALESCE(d.ubicacion, 'Desconocida') as ubicacion_dispositivo,
                 ha.confianza,
-                ha.metadatos
+                ha.estado_registro,
+                ha.es_dia_laboral,
+                COALESCE(ha.razon, 'N/A') as razon,
+                ha.foto_url
             FROM historial_accesos ha
             LEFT JOIN personas p ON ha.id_persona = p.id_persona
             LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
+            LEFT JOIN horarios_persona hp ON ha.id_persona = hp.id_persona
             WHERE ha.id_acceso = :id_acceso
         """)
         result = db.execute(query, {"id_acceso": id_acceso})
@@ -369,8 +392,21 @@ def obtener_detalle_acceso(id_acceso: int, db: Session = Depends(get_db)):
             "id_acceso": acceso.id_acceso,
             "nombre_completo": acceso.nombre_completo,
             "fecha": acceso.fecha,
-            "resultado": acceso.resultado,
-            "dispositivo": acceso.dispositivo,
+            "horario": acceso.horario,
+            "dispositivo": {
+                "nombre": acceso.nombre_dispositivo,
+                "ubicacion": acceso.ubicacion_dispositivo
+            },
+            "estatus": acceso.estatus,
+            "detalles_acceso": {
+                "hora_entrada": str(acceso.hora_entrada) if acceso.hora_entrada else "N/A",
+                "hora_salida": str(acceso.hora_salida) if acceso.hora_salida else "N/A"
+            },
+            "dias_laborales": acceso.dias_laborales,
+            "nivel_confianza": acceso.confianza * 100 if acceso.confianza else None,
+            "estado_registro": acceso.estado_registro,
+            "es_dia_laboral": acceso.es_dia_laboral,
+            "razon": acceso.razon,
             "foto_url": acceso.foto_url
         }
 
