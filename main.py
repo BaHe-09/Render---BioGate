@@ -113,6 +113,22 @@ class ReporteCreate(BaseModel):
     id_dispositivo: Optional[int] = None
     etiquetas: Optional[dict] = None
     evidencias: Optional[List[str]] = None
+
+class ReporteResponse(BaseModel):
+    id_reporte: int
+    titulo: str
+    descripcion: str
+    tipo_reporte: str
+    severidad: Optional[str] = None
+    estado: str
+    fecha: str
+    hora: str
+    nombre: str
+    ubicacion: str
+    evidencias: Optional[List[str]] = None
+
+    class Config:
+        from_attributes = True  # Permite la conversión desde ORM models
 # --- Endpoints ---
 @app.get("/")
 def read_root():
@@ -607,6 +623,53 @@ def crear_reporte(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error interno al crear el reporte"
+        )
+
+@app.get("/reportes/", response_model=List[ReporteResponse])
+def obtener_reportes(db: Session = Depends(get_db)):
+    try:
+        # Consulta para obtener todos los reportes
+        query = text("""
+            SELECT 
+                r.id_reporte,
+                r.titulo,
+                r.descripcion,
+                r.tipo_reporte,
+                r.severidad,
+                r.estado,
+                TO_CHAR(r.fecha_generacion, 'DD Mon YYYY') as fecha,
+                TO_CHAR(r.fecha_generacion, 'HH:MI AM') as hora,
+                COALESCE(CONCAT(p.nombre, ' ', p.apellido_paterno), 'Desconocido') as nombre,
+                COALESCE(d.ubicacion, 'N/A') as ubicacion,
+                r.evidencias
+            FROM reportes r
+            LEFT JOIN historial_accesos ha ON r.id_acceso_relacionado = ha.id_acceso
+            LEFT JOIN personas p ON ha.id_persona = p.id_persona
+            LEFT JOIN dispositivos d ON r.id_dispositivo = d.id_dispositivo
+            ORDER BY r.fecha_generacion DESC
+        """)
+        result = db.execute(query)
+        reportes = result.fetchall()
+
+        return [{
+            "id_reporte": r.id_reporte,
+            "titulo": r.titulo,
+            "descripcion": r.descripcion,
+            "tipo_reporte": r.tipo_reporte,
+            "severidad": r.severidad,
+            "estado": r.estado,
+            "fecha": r.fecha,
+            "hora": r.hora,
+            "nombre": r.nombre,
+            "ubicacion": r.ubicacion,
+            "evidencias": r.evidencias
+        } for r in reportes]
+
+    except Exception as e:
+        logger.error(f"Error al obtener reportes: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Error al obtener los reportes"
         )
 
 @app.get("/health")
