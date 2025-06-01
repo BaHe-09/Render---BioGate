@@ -264,7 +264,7 @@ def obtener_historial_accesos(
             "nombre": f"%{filtros.nombre}%" if filtros.nombre else "%"
         }
 
-        # Construir la consulta base
+        # Construir la consulta base (modificada para mostrar ubicación)
         query = text("""
             SELECT 
                 ha.id_acceso,
@@ -274,7 +274,7 @@ def obtener_historial_accesos(
                     WHEN ha.resultado = 'Éxito' THEN 'PERMITIDO'
                     ELSE 'DENEGADO'
                 END as resultado,
-                COALESCE(d.nombre, 'Desconocido') as dispositivo,
+                COALESCE(d.ubicacion, 'Desconocida') as dispositivo,
                 ha.foto_url
             FROM historial_accesos ha
             LEFT JOIN personas p ON ha.id_persona = p.id_persona
