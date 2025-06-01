@@ -115,7 +115,7 @@ class ReporteBase(BaseModel):
     evidencias: Optional[List[str]] = None
 
 class ReporteCreate(ReporteBase):
-    pass
+    generado_por: int 
 
 class ReporteResponse(ReporteBase):
     id_reporte: int
@@ -556,9 +556,8 @@ def actualizar_estado_persona(
 
 @app.post("/reportes/", response_model=ReporteResponse, status_code=status.HTTP_201_CREATED)
 def crear_reporte(
-    reporte: ReporteCreate, 
-    db: Session = Depends(get_db),
-    current_user_id: int = Depends(get_current_user)  # Asume que tienes un sistema de autenticación
+   reporte: ReporteCreate,  # Ahora incluye generado_por
+   db: Session = Depends(get_db)
 ):
     try:
         query = text("""
@@ -579,7 +578,7 @@ def crear_reporte(
             "tipo_reporte": reporte.tipo_reporte,
             "severidad": reporte.severidad,
             "estado": reporte.estado,
-            "generado_por": current_user_id,
+            "generado_por": user_id,  # Ahora viene del query param
             "id_acceso_relacionado": reporte.id_acceso_relacionado,
             "id_dispositivo": reporte.id_dispositivo,
             "etiquetas": json.dumps(reporte.etiquetas) if reporte.etiquetas else None,
@@ -593,7 +592,7 @@ def crear_reporte(
             "id_reporte": nuevo_reporte.id_reporte,
             **reporte.dict(),
             "fecha_generacion": nuevo_reporte.fecha_generacion,
-            "generado_por": current_user_id
+            "generado_por": user_id
         }
         
     except Exception as e:
@@ -603,7 +602,7 @@ def crear_reporte(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al crear el reporte"
         )
-
+        
 @app.get("/reportes/", response_model=List[ReporteResponse])
 def listar_reportes(
     estado: Optional[str] = None,
