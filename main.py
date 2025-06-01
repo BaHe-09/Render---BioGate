@@ -202,6 +202,11 @@ async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depend
         img = Image.open(io.BytesIO(contents))
         img_array = preprocess_image(img)
         
+        # Obtener hora actual en México (para usar en todo el proceso)
+        timezone_mx = pytz.timezone('America/Mexico_City')
+        now_mx = datetime.now(timezone_mx)
+        hora_registro_str = now_mx.strftime("%H:%M:%S")
+        
         # Obtener embeddings
         detections = facenet.embeddings([img_array])
         
@@ -212,14 +217,23 @@ async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depend
         embedding = detections[0].tolist()
         matches = search_similar_embeddings(db, embedding)
         
+        # Registrar acceso (incluso si no hay matches)
+        confidence = float(matches[0].similitud) if matches else None
+        id_persona = matches[0].id_persona if matches else None
+        access_granted = matches and matches[0].activo if matches else False
+        
+        # Registrar el intento de acceso
+        hora_registro_used = register_access_attempt(
+            db, id_persona, confidence, access_granted)
+        
         # Procesar coincidencias
         formatted_matches = []
         best_match = None
-        access_granted = False
-        reason = "No se encontraron coincidencias"
+        reason = "No se encontraron coincidencias" if not matches else (
+            "Persona reconocida y activa" if access_granted else "Persona reconocida pero inactiva"
+        )
         estado_registro = None
         horario_info = None
-        hora_registro_str = None
         
         if matches:
             best_match = {
@@ -230,14 +244,6 @@ async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depend
             }
             
             if matches[0].activo:
-                access_granted = True
-                reason = "Persona reconocida y activa"
-                
-                # Obtener hora actual en México
-                timezone_mx = pytz.timezone('America/Mexico_City')
-                now_mx = datetime.now(timezone_mx)
-                hora_registro_str = now_mx.strftime("%H:%M:%S")
-                
                 # Obtener horario y determinar estado
                 hora_entrada, hora_salida, tolerancia, dias_laborales = obtener_horario_persona(db, matches[0].id_persona, now_mx)
                 estado_registro = determinar_estado_registro(
@@ -249,26 +255,15 @@ async def get_face_embeddings(file: UploadFile = File(...), db: Session = Depend
                     "hora_salida": hora_salida.strftime("%H:%M") if hora_salida else "N/A",
                     "tolerancia_retraso": tolerancia,
                     "dias_laborales": dias_laborales,
-                    "hora_registro": now_mx.strftime("%H:%M")  # Hora en formato corto
+                    "hora_registro": now_mx.strftime("%H:%M")
                 }
-                
-                # Registrar el acceso (devuelve la hora usada)
-                hora_registro_used = register_access_attempt(
-                    db, matches[0].id_persona, 
-                    float(matches[0].similitud), 
-                    access_granted)
-                
-                # Asegurarnos de usar la misma hora en toda la respuesta
-                hora_registro_str = hora_registro_used or hora_registro_str
-            else:
-                reason = "Persona reconocida pero inactiva"
         
         response_data = {
             "message": "Embeddings generados correctamente",
             "access_granted": access_granted,
             "reason": reason,
             "estado_registro": estado_registro,
-            "hora_registro": hora_registro_str,
+            "hora_registro": hora_registro_used or hora_registro_str,
             "dia_semana": now_mx.strftime("%A") if matches else None
         }
         
