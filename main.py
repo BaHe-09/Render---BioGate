@@ -264,11 +264,14 @@ def obtener_historial_accesos(
             "nombre": f"%{filtros.nombre}%" if filtros.nombre else "%"
         }
 
-        # Construir la consulta base (modificada para mostrar ubicación)
+        # Consulta modificada para manejar casos sin nombre
         query = text("""
             SELECT 
                 ha.id_acceso,
-                CONCAT(p.nombre, ' ', p.apellido_paterno) as nombre_completo,
+                CASE 
+                    WHEN p.nombre IS NULL THEN 'DESCONOCIDO'
+                    ELSE CONCAT(p.nombre, ' ', p.apellido_paterno)
+                END as nombre_completo,
                 TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI AM') as fecha,
                 CASE 
                     WHEN ha.resultado = 'Éxito' THEN 'PERMITIDO'
@@ -279,26 +282,14 @@ def obtener_historial_accesos(
             FROM historial_accesos ha
             LEFT JOIN personas p ON ha.id_persona = p.id_persona
             LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
-            WHERE CONCAT(p.nombre, ' ', p.apellido_paterno) LIKE :nombre
+            WHERE 
+                CASE 
+                    WHEN p.nombre IS NULL THEN 'DESCONOCIDO'
+                    ELSE CONCAT(p.nombre, ' ', p.apellido_paterno)
+                END LIKE :nombre
+            ORDER BY ha.fecha DESC 
+            LIMIT :limite
         """)
-
-        # Añadir filtros de fecha si están presentes
-        if filtros.fecha_inicio and filtros.fecha_fin:
-            query = text(str(query) + " AND ha.fecha BETWEEN :fecha_inicio AND :fecha_fin")
-            query_params.update({
-                "fecha_inicio": filtros.fecha_inicio,
-                "fecha_fin": filtros.fecha_fin
-            })
-        
-        # Añadir filtro de resultado si está presente
-        if filtros.resultado:
-            if filtros.resultado.upper() == 'PERMITIDO':
-                query = text(str(query) + " AND ha.resultado = 'Éxito'")
-            elif filtros.resultado.upper() == 'DENEGADO':
-                query = text(str(query) + " AND ha.resultado != 'Éxito'")
-
-        # Ordenar y limitar
-        query = text(str(query) + " ORDER BY ha.fecha DESC LIMIT :limite")
 
         result = db.execute(query, query_params)
         historial = result.fetchall()
