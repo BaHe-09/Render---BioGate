@@ -2,12 +2,13 @@ from fastapi import FastAPI, HTTPException, Depends, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import bcrypt
-from pydantic import BaseModel, EmailStr, validator
+from pydantic import BaseModel, EmailStr, validator, Field
 from typing import Optional, List
 from datetime import datetime
 import logging
 from fastapi.middleware.cors import CORSMiddleware
 from database import get_db
+import json
 
 # Configuración básica de logging
 logging.basicConfig(level=logging.INFO)
