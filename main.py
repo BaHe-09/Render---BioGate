@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status, Query
+from fastapi import FastAPI, HTTPException, Depends, status, QueryMore actions
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import bcrypt
@@ -50,26 +50,14 @@ class UsuarioRegistro(BaseModel):
     persona: RegistroPersona
     cuenta: RegistroCuenta
 
-class DispositivoModel(BaseModel):
-    nombre: str
-    ubicacion: str
-
-class DetallesAccesoModel(BaseModel):
-    hora_entrada: Optional[str] = "N/A"
-    hora_salida: Optional[str] = "N/A"
-
 class HistorialAcceso(BaseModel):
     id_acceso: int
     nombre_completo: str
     fecha: str
-    dispositivo: DispositivoModel
-    estatus: str
-    nivel_confianza: Optional[float] = None
-    razon: str
-    detalles_acceso: DetallesAccesoModel
-    es_dia_laboral: bool
-    estado_registro: str
-    
+    resultado: str
+    dispositivo: str
+    foto_url: Optional[str] = None
+
 class HistorialFiltrado(BaseModel):
     fecha_inicio: Optional[str] = None
     fecha_fin: Optional[str] = None
@@ -111,7 +99,7 @@ def read_root():
 def login(user: UserLogin, db: Session = Depends(get_db)):
     try:
         logger.info(f"Intento de login para: {user.username}")
-        
+
         # 1. Buscar usuario en la base de datos
         query = text("""
             SELECT id_cuenta, contrasena_hash 
@@ -162,13 +150,13 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
 def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
     try:
         logger.info(f"Intento de registro para: {usuario.persona.email}")
-        
+
         # Verificar si el correo ya existe
         correo_existente = db.execute(
             text("SELECT 1 FROM personas WHERE correo_electronico = :correo"),
             {"correo": usuario.persona.email}
         ).scalar()
-        
+
         if correo_existente:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -181,7 +169,7 @@ def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
             text("SELECT 1 FROM cuentas WHERE nombre_usuario = :username"),
             {"username": nombre_usuario}
         ).scalar()
-        
+
         if usuario_existente:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -255,7 +243,7 @@ def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
     except HTTPException:
         db.rollback()
         raise
-        
+
     except Exception as e:
         db.rollback()
         logger.error(f"Error inesperado: {str(e)}", exc_info=True)
@@ -276,32 +264,24 @@ def obtener_historial_accesos(
             "nombre": f"%{filtros.nombre}%" if filtros.nombre else "%"
         }
 
+        # Construir la consulta base (modificada para mostrar ubicación)
+        # Consulta modificada para manejar casos sin nombre
         query = text("""
             SELECT 
                 ha.id_acceso,
+                CONCAT(p.nombre, ' ', p.apellido_paterno) as nombre_completo,
                 CASE 
                     WHEN p.nombre IS NULL THEN 'DESCONOCIDO'
-                    ELSE CONCAT(p.nombre, ' ', p.apellido_paterno, ' ', COALESCE(p.apellido_materno, ''))
+                    ELSE CONCAT(p.nombre, ' ', p.apellido_paterno)
                 END as nombre_completo,
-                TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI:SS AM') as fecha,
-                d.nombre as nombre_dispositivo,
-                COALESCE(d.ubicacion, 'Desconocida') as ubicacion_dispositivo,
+                TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI AM') as fecha,
                 CASE 
                     WHEN ha.resultado = 'Éxito' THEN 'PERMITIDO'
-                    ELSE 'DENEGADO'
-                END as estatus,
-                ha.confianza as nivel_confianza,
-                COALESCE(ha.razon, 'N/A') as razon,
-                jsonb_build_object(
-                    'hora_entrada', CASE WHEN hp.hora_entrada IS NULL THEN 'N/A' ELSE TO_CHAR(hp.hora_entrada, 'HH:MI:SS AM') END,
-                    'hora_salida', CASE WHEN hp.hora_salida IS NULL THEN 'N/A' ELSE TO_CHAR(hp.hora_salida, 'HH:MI:SS AM') END
-                ) as detalles_acceso,
-                ha.es_dia_laboral,
-                ha.estado_registro
+@@ -279,190 +282,178 @@
             FROM historial_accesos ha
             LEFT JOIN personas p ON ha.id_persona = p.id_persona
             LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
-            LEFT JOIN horarios_persona hp ON p.id_persona = hp.id_persona
+            WHERE CONCAT(p.nombre, ' ', p.apellido_paterno) LIKE :nombre
             WHERE 
                 CASE 
                     WHEN p.nombre IS NULL THEN 'DESCONOCIDO'
@@ -311,64 +291,62 @@ def obtener_historial_accesos(
             LIMIT :limite
         """)
 
+        # Añadir filtros de fecha si están presentes
+        if filtros.fecha_inicio and filtros.fecha_fin:
+            query = text(str(query) + " AND ha.fecha BETWEEN :fecha_inicio AND :fecha_fin")
+            query_params.update({
+                "fecha_inicio": filtros.fecha_inicio,
+                "fecha_fin": filtros.fecha_fin
+            })
+        
+        # Añadir filtro de resultado si está presente
+        if filtros.resultado:
+            if filtros.resultado.upper() == 'PERMITIDO':
+                query = text(str(query) + " AND ha.resultado = 'Éxito'")
+            elif filtros.resultado.upper() == 'DENEGADO':
+                query = text(str(query) + " AND ha.resultado != 'Éxito'")
+
+        # Ordenar y limitar
+        query = text(str(query) + " ORDER BY ha.fecha DESC LIMIT :limite")
+
         result = db.execute(query, query_params)
         historial = result.fetchall()
-        
+
         return [{
             "id_acceso": item.id_acceso,
             "nombre_completo": item.nombre_completo,
             "fecha": item.fecha,
-            "dispositivo": {
-                "nombre": item.nombre_dispositivo,
-                "ubicacion": item.ubicacion_dispositivo
-            },
-            "estatus": item.estatus,
-            "nivel_confianza": item.nivel_confianza,
-            "razon": item.razon,
-            "detalles_acceso": {
-                "hora_entrada": item.detalles_acceso.get('hora_entrada', 'N/A'),
-                "hora_salida": item.detalles_acceso.get('hora_salida', 'N/A')
-            },
-            "es_dia_laboral": item.es_dia_laboral,
-            "estado_registro": item.estado_registro
+            "resultado": item.resultado,
+            "dispositivo": item.dispositivo,
+            "foto_url": item.foto_url
         } for item in historial]
-        
+
     except Exception as e:
         logger.error(f"Error al obtener historial: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail="Error al obtener el historial de accesos"
         )
-        
+
 @app.get("/historial-accesos/{id_acceso}", response_model=HistorialAcceso)
 def obtener_detalle_acceso(id_acceso: int, db: Session = Depends(get_db)):
     try:
         query = text("""
             SELECT 
                 ha.id_acceso,
-                CASE 
-                    WHEN p.nombre IS NULL THEN 'DESCONOCIDO'
-                    ELSE CONCAT(p.nombre, ' ', p.apellido_paterno, ' ', COALESCE(p.apellido_materno, ''))
-                END as nombre_completo,
-                TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI:SS AM') as fecha,
-                d.nombre as nombre_dispositivo,
-                COALESCE(d.ubicacion, 'Desconocida') as ubicacion_dispositivo,
+                CONCAT(p.nombre, ' ', p.apellido_paterno) as nombre_completo,
+                TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI AM') as fecha,
                 CASE 
                     WHEN ha.resultado = 'Éxito' THEN 'PERMITIDO'
                     ELSE 'DENEGADO'
-                END as estatus,
-                ha.confianza as nivel_confianza,
-                COALESCE(ha.razon, 'N/A') as razon,
-                jsonb_build_object(
-                    'hora_entrada', TO_CHAR(hp.hora_entrada, 'HH:MI:SS AM'),
-                    'hora_salida', TO_CHAR(hp.hora_salida, 'HH:MI:SS AM')
-                ) as detalles_acceso,
-                ha.es_dia_laboral,
-                ha.estado_registro
+                END as resultado,
+                COALESCE(d.nombre, 'Desconocido') as dispositivo,
+                ha.foto_url,
+                ha.confianza,
+                ha.metadatos
             FROM historial_accesos ha
             LEFT JOIN personas p ON ha.id_persona = p.id_persona
             LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
-            LEFT JOIN horarios_persona hp ON p.id_persona = hp.id_persona
             WHERE ha.id_acceso = :id_acceso
         """)
         result = db.execute(query, {"id_acceso": id_acceso})
@@ -380,29 +358,15 @@ def obtener_detalle_acceso(id_acceso: int, db: Session = Depends(get_db)):
                 detail="Registro de acceso no encontrado"
             )
 
-        # Procesar detalles de acceso
-        hora_entrada = acceso.detalles_acceso.get('hora_entrada', 'N/A') if acceso.detalles_acceso else 'N/A'
-        hora_salida = acceso.detalles_acceso.get('hora_salida', 'N/A') if acceso.detalles_acceso else 'N/A'
-
         return {
             "id_acceso": acceso.id_acceso,
             "nombre_completo": acceso.nombre_completo,
             "fecha": acceso.fecha,
-            "dispositivo": {
-                "nombre": acceso.nombre_dispositivo,
-                "ubicacion": acceso.ubicacion_dispositivo
-            },
-            "estatus": acceso.estatus,
-            "nivel_confianza": acceso.nivel_confianza,
-            "razon": acceso.razon,
-            "detalles_acceso": {
-                "hora_entrada": hora_entrada,
-                "hora_salida": hora_salida
-            },
-            "es_dia_laboral": acceso.es_dia_laboral,
-            "estado_registro": acceso.estado_registro
+            "resultado": acceso.resultado,
+            "dispositivo": acceso.dispositivo,
+            "foto_url": acceso.foto_url
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -440,7 +404,7 @@ def obtener_personas(db: Session = Depends(get_db)):
         """)
         result = db.execute(query)
         personas = result.fetchall()
-        
+
         return [{
             "id_persona": p.id_persona,
             "nombre": p.nombre,
@@ -451,7 +415,7 @@ def obtener_personas(db: Session = Depends(get_db)):
             "activo": p.activo,
             "fecha_registro": p.fecha_registro
         } for p in personas]
-        
+
     except Exception as e:
         logger.error(f"Error al obtener personas: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -471,7 +435,7 @@ def actualizar_estado_persona(
             text("SELECT 1 FROM personas WHERE id_persona = :id"),
             {"id": id_persona}
         ).scalar()
-        
+
         if not persona_existente:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -491,7 +455,7 @@ def actualizar_estado_persona(
             }
         )
         db.commit()
-        
+
         return {
             "status": "success",
             "message": "Estado actualizado correctamente"
@@ -507,7 +471,7 @@ def actualizar_estado_persona(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al actualizar el estado"
         )
-        
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "auth-api"}
