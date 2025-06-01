@@ -55,8 +55,8 @@ class DispositivoModel(BaseModel):
     ubicacion: str
 
 class DetallesAccesoModel(BaseModel):
-    hora_entrada: str
-    hora_salida: str
+    hora_entrada: Optional[str] = "N/A"
+    hora_salida: Optional[str] = "N/A"
 
 class HistorialAcceso(BaseModel):
     id_acceso: int
@@ -293,8 +293,8 @@ def obtener_historial_accesos(
                 ha.confianza as nivel_confianza,
                 COALESCE(ha.razon, 'N/A') as razon,
                 jsonb_build_object(
-                    'hora_entrada', TO_CHAR(hp.hora_entrada, 'HH:MI:SS AM'),
-                    'hora_salida', TO_CHAR(hp.hora_salida, 'HH:MI:SS AM')
+                    'hora_entrada', CASE WHEN hp.hora_entrada IS NULL THEN 'N/A' ELSE TO_CHAR(hp.hora_entrada, 'HH:MI:SS AM') END,
+                    'hora_salida', CASE WHEN hp.hora_salida IS NULL THEN 'N/A' ELSE TO_CHAR(hp.hora_salida, 'HH:MI:SS AM') END
                 ) as detalles_acceso,
                 ha.es_dia_laboral,
                 ha.estado_registro
@@ -326,8 +326,8 @@ def obtener_historial_accesos(
             "nivel_confianza": item.nivel_confianza,
             "razon": item.razon,
             "detalles_acceso": {
-                "hora_entrada": item.detalles_acceso.get('hora_entrada', 'N/A') if item.detalles_acceso else 'N/A',
-                "hora_salida": item.detalles_acceso.get('hora_salida', 'N/A') if item.detalles_acceso else 'N/A'
+                "hora_entrada": item.detalles_acceso.get('hora_entrada', 'N/A'),
+                "hora_salida": item.detalles_acceso.get('hora_salida', 'N/A')
             },
             "es_dia_laboral": item.es_dia_laboral,
             "estado_registro": item.estado_registro
@@ -339,7 +339,7 @@ def obtener_historial_accesos(
             status_code=500,
             detail="Error al obtener el historial de accesos"
         )
-
+        
 @app.get("/historial-accesos/{id_acceso}", response_model=HistorialAcceso)
 def obtener_detalle_acceso(id_acceso: int, db: Session = Depends(get_db)):
     try:
