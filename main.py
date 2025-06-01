@@ -277,7 +277,6 @@ def obtener_historial_accesos(
                 TO_CHAR(ha.fecha, 'DD/MM/YYYY – HH:MI AM') as fecha,
                 CASE 
                     WHEN ha.resultado = 'Éxito' THEN 'PERMITIDO'
-@@ -279,190 +282,178 @@
             FROM historial_accesos ha
             LEFT JOIN personas p ON ha.id_persona = p.id_persona
             LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
