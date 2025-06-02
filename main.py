@@ -293,7 +293,7 @@ async def exportar_accesos_csv(
     Los caracteres especiales se reemplazan por equivalentes sin acentos.
     """
     try:
-        # Consulta SQL (sin cambios)
+        # Consulta SQL
         query = text("""
             SELECT 
                 ha.id_acceso, 
@@ -313,7 +313,30 @@ async def exportar_accesos_csv(
             WHERE 1=1
         """)
         
-        # ... (resto del código de filtros igual)
+        params = {}
+        
+        # Aplicar filtros
+        if estado_registro:
+            query = text(f"{query.text} AND ha.estado_registro = :estado_registro")
+            params["estado_registro"] = estado_registro
+            
+        if resultado:
+            query = text(f"{query.text} AND ha.resultado = :resultado")
+            params["resultado"] = resultado
+            
+        if fecha_inicio:
+            query = text(f"{query.text} AND ha.fecha >= :fecha_inicio")
+            params["fecha_inicio"] = fecha_inicio
+            
+        if fecha_fin:
+            query = text(f"{query.text} AND ha.fecha <= :fecha_fin")
+            params["fecha_fin"] = fecha_fin + " 23:59:59"
+        
+        query = text(f"{query.text} ORDER BY ha.fecha DESC")
+        
+        # Ejecutar consulta y obtener resultados
+        result = db.execute(query, params)
+        accesos = result.fetchall()  # Esta línea faltaba en tu código original
 
         # Función para eliminar acentos
         def remove_accents(input_str):
@@ -366,7 +389,7 @@ async def exportar_accesos_csv(
         filename = f"accesos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
         return StreamingResponse(
-            iter([output.getvalue().encode('utf-8')]),  # Codificar a UTF-8
+            iter([output.getvalue().encode('utf-8')]),
             media_type="text/csv; charset=utf-8",
             headers={
                 "Content-Disposition": f"attachment; filename={filename}",
@@ -379,7 +402,7 @@ async def exportar_accesos_csv(
             status_code=500,
             detail=f"Error al generar el archivo CSV: {str(e)}"
         )
-        
+
 @app.get("/", include_in_schema=False)
 def root():
     return {"message": "API de registro de personas con identificación facial"}
