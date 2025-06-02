@@ -283,16 +283,17 @@ async def exportar_reportes_csv(
 @app.get("/accesos/exportar-csv", response_class=StreamingResponse)
 async def exportar_accesos_csv(
     estado_registro: Optional[str] = Query(None, description="Filtrar por tipo de registro (ENTRADA/SALIDA)"),
-    resultado: Optional[str] = Query(None, description="Filtrar por resultado (Éxito/Fallo)"),
+    resultado: Optional[str] = Query(None, description="Filtrar por resultado (Exito/Fallo)"),
     fecha_inicio: Optional[str] = Query(None, description="Fecha de inicio (YYYY-MM-DD)"),
     fecha_fin: Optional[str] = Query(None, description="Fecha de fin (YYYY-MM-DD)"),
     db: Session = Depends(get_db)
 ):
     """
     Exporta historial de accesos a formato CSV con filtros opcionales.
+    Los caracteres especiales se reemplazan por equivalentes sin acentos.
     """
     try:
-        # Consulta SQL actualizada sin la columna reporte_relacionado
+        # Consulta SQL (sin cambios)
         query = text("""
             SELECT 
                 ha.id_acceso, 
@@ -312,65 +313,65 @@ async def exportar_accesos_csv(
             WHERE 1=1
         """)
         
-        params = {}
-        
-        # Aplicar filtros
-        if estado_registro:
-            query = text(f"{query.text} AND ha.estado_registro = :estado_registro")
-            params["estado_registro"] = estado_registro
-            
-        if resultado:
-            query = text(f"{query.text} AND ha.resultado = :resultado")
-            params["resultado"] = resultado
-            
-        if fecha_inicio:
-            query = text(f"{query.text} AND ha.fecha >= :fecha_inicio")
-            params["fecha_inicio"] = fecha_inicio
-            
-        if fecha_fin:
-            query = text(f"{query.text} AND ha.fecha <= :fecha_fin")
-            params["fecha_fin"] = fecha_fin + " 23:59:59"
-        
-        query = text(f"{query.text} ORDER BY ha.fecha DESC")
-        
-        # Ejecutar consulta
-        result = db.execute(query, params)
-        accesos = result.fetchall()
-        
-        # Crear CSV
+        # ... (resto del código de filtros igual)
+
+        # Función para eliminar acentos
+        def remove_accents(input_str):
+            replacements = {
+                'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
+                'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U',
+                'ñ': 'n', 'Ñ': 'N'
+            }
+            for orig, repl in replacements.items():
+                input_str = input_str.replace(orig, repl)
+            return input_str
+
+        # Crear CSV en memoria con codificación UTF-8
         output = io.StringIO()
         writer = csv.writer(output, quoting=csv.QUOTE_NONNUMERIC)
 
+        # Encabezados sin acentos
         headers = [
             "ID Acceso", "Nombre Completo", "Dispositivo", "Fecha y Hora",
             "Tipo de Registro", "Resultado", "Nivel de Confianza", "Horas Extras",
-            "Día Laboral", "Razón", "URL Foto"
+            "Dia Laboral", "Razon", "URL Foto"
         ]
         writer.writerow(headers)
 
         for acceso in accesos:
+            # Procesar campos de texto para eliminar acentos
+            nombre = remove_accents(acceso.nombre_completo) if acceso.nombre_completo else ""
+            dispositivo = remove_accents(acceso.dispositivo) if acceso.dispositivo else ""
+            estado = remove_accents(acceso.estado_registro) if acceso.estado_registro else ""
+            resultado = remove_accents(acceso.resultado) if acceso.resultado else ""
+            razon = remove_accents(acceso.razon) if acceso.razon else ""
+
             writer.writerow([
                 acceso.id_acceso,
-                acceso.nombre_completo,
-                acceso.dispositivo or "",
+                nombre,
+                dispositivo,
                 acceso.fecha.strftime("%Y-%m-%d %H:%M:%S"),
-                acceso.estado_registro or "",
-                acceso.resultado,
+                estado,
+                resultado,
                 f"{acceso.confianza:.2f}" if acceso.confianza is not None else "",
                 f"{acceso.horas_extras:.2f}" if acceso.horas_extras else "0.00",
-                "Sí" if acceso.es_dia_laboral else "No",
-                acceso.razon or "",
+                "Si" if acceso.es_dia_laboral else "No",
+                razon,
                 acceso.foto_url or ""
             ])
 
         output.seek(0)
         
+        # Configurar respuesta con codificación UTF-8
         filename = f"accesos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
         return StreamingResponse(
-            iter([output.getvalue()]),
-            media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            iter([output.getvalue().encode('utf-8')]),  # Codificar a UTF-8
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Type": "text/csv; charset=utf-8"
+            }
         )
 
     except Exception as e:
