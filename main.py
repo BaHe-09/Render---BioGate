@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Form, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 import numpy as np
 from PIL import Image
