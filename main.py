@@ -292,7 +292,7 @@ async def exportar_accesos_csv(
     Exporta historial de accesos a formato CSV con filtros opcionales.
     """
     try:
-        # Construir la consulta SQL base con JOIN para obtener el nombre de la persona
+        # Consulta SQL actualizada sin la columna reporte_relacionado
         query = text("""
             SELECT 
                 ha.id_acceso, 
@@ -305,7 +305,6 @@ async def exportar_accesos_csv(
                 ha.horas_extras,
                 ha.es_dia_laboral,
                 ha.razon,
-                ha.reporte_relacionado,
                 ha.foto_url
             FROM historial_accesos ha
             LEFT JOIN personas p ON ha.id_persona = p.id_persona
@@ -330,28 +329,25 @@ async def exportar_accesos_csv(
             
         if fecha_fin:
             query = text(f"{query.text} AND ha.fecha <= :fecha_fin")
-            params["fecha_fin"] = fecha_fin + " 23:59:59"  # Incluir todo el día
+            params["fecha_fin"] = fecha_fin + " 23:59:59"
         
-        # Ordenar por fecha descendente
         query = text(f"{query.text} ORDER BY ha.fecha DESC")
         
         # Ejecutar consulta
         result = db.execute(query, params)
         accesos = result.fetchall()
         
-        # Crear CSV en memoria
+        # Crear CSV
         output = io.StringIO()
         writer = csv.writer(output, quoting=csv.QUOTE_NONNUMERIC)
 
-        # Escribir encabezados
         headers = [
             "ID Acceso", "Nombre Completo", "Dispositivo", "Fecha y Hora",
             "Tipo de Registro", "Resultado", "Nivel de Confianza", "Horas Extras",
-            "Día Laboral", "Razón", "Reporte Relacionado", "URL Foto"
+            "Día Laboral", "Razón", "URL Foto"
         ]
         writer.writerow(headers)
 
-        # Escribir datos
         for acceso in accesos:
             writer.writerow([
                 acceso.id_acceso,
@@ -364,13 +360,11 @@ async def exportar_accesos_csv(
                 f"{acceso.horas_extras:.2f}" if acceso.horas_extras else "0.00",
                 "Sí" if acceso.es_dia_laboral else "No",
                 acceso.razon or "",
-                acceso.reporte_relacionado or "",  # Cambiado para coincidir con la consulta
                 acceso.foto_url or ""
             ])
 
         output.seek(0)
         
-        # Configurar respuesta para descarga
         filename = f"accesos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
         return StreamingResponse(
