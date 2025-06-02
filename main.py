@@ -305,7 +305,7 @@ async def exportar_accesos_csv(
                 ha.horas_extras,
                 ha.es_dia_laboral,
                 ha.razon,
-                ha.id_reporte_relacionado,
+                ha.reporte_relacionado,  # Cambiado de id_reporte_relacionado a reporte_relacionado
                 ha.foto_url
             FROM historial_accesos ha
             LEFT JOIN personas p ON ha.id_persona = p.id_persona
@@ -364,7 +364,7 @@ async def exportar_accesos_csv(
                 f"{acceso.horas_extras:.2f}" if acceso.horas_extras else "0.00",
                 "Sí" if acceso.es_dia_laboral else "No",
                 acceso.razon or "",
-                acceso.id_reporte_relacionado or "",
+                acceso.reporte_relacionado or "",  # Cambiado para coincidir con la consulta
                 acceso.foto_url or ""
             ])
 
@@ -384,7 +384,7 @@ async def exportar_accesos_csv(
             status_code=500,
             detail=f"Error al generar el archivo CSV: {str(e)}"
         )
-
+        
 @app.get("/", include_in_schema=False)
 def root():
     return {"message": "API de registro de personas con identificación facial"}
