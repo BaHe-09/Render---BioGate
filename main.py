@@ -672,6 +672,48 @@ def obtener_reportes(db: Session = Depends(get_db)):
             detail="Error al obtener los reportes"
         )
 
+@app.delete("/personas/{id_persona}", status_code=status.HTTP_200_OK)
+def eliminar_persona(
+    id_persona: int,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Verificar si la persona existe
+        persona_existente = db.execute(
+            text("SELECT 1 FROM personas WHERE id_persona = :id"),
+            {"id": id_persona}
+        ).scalar()
+
+        if not persona_existente:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Persona no encontrada"
+            )
+
+        # Eliminar registros relacionados en cascada
+        # (gracias a ON DELETE CASCADE en la base de datos)
+        db.execute(
+            text("DELETE FROM personas WHERE id_persona = :id_persona"),
+            {"id_persona": id_persona}
+        )
+        db.commit()
+
+        return {
+            "status": "success",
+            "message": "Usuario y todos sus datos asociados eliminados correctamente"
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error al eliminar usuario: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al eliminar el usuario y sus datos"
+        )
+        
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "auth-api"}
