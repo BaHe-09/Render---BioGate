@@ -192,37 +192,49 @@ async def exportar_reportes_csv(
     tipo_reporte: Optional[str] = Query(None, description="Filtrar por tipo de reporte"),
     estado: Optional[str] = Query(None, description="Filtrar por estado del reporte"),
     fecha_inicio: Optional[str] = Query(None, description="Fecha de inicio (YYYY-MM-DD)"),
-    fecha_fin: Optional[str] = Query(None, description="Fecha de fin (YYYY-MM-DD)")
+    fecha_fin: Optional[str] = Query(None, description="Fecha de fin (YYYY-MM-DD)"),
+    db: Session = Depends(get_db)
 ):
     """
     Exporta reportes a formato CSV con filtros opcionales.
     """
     try:
-        # Simulación de datos - reemplaza con tu consulta a la base de datos
-        reportes = [
-            {
-                "id_reporte": 1,
-                "titulo": "Error en el sistema",
-                "descripcion": "El sistema no responde",
-                "tipo_reporte": "Error del sistema",
-                "severidad": "Alta",
-                "estado": "Abierto",
-                "fecha_generacion": datetime.now(),
-                "fecha_cierre": None,
-                "id_acceso_relacionado": None,
-                "id_dispositivo": 5
-            },
-            # Agrega más datos de prueba o conecta con tu base de datos real
-        ]
-
-        # Aplicar filtros (en una implementación real, esto sería parte de tu consulta SQL)
-        filtered_data = reportes
+        # Construir la consulta SQL base
+        query = text("""
+            SELECT 
+                id_reporte, titulo, descripcion, tipo_reporte,
+                severidad, estado, fecha_generacion, fecha_cierre,
+                id_acceso_relacionado, id_dispositivo
+            FROM reportes
+            WHERE 1=1
+        """)
+        
+        params = {}
+        
+        # Aplicar filtros
         if tipo_reporte:
-            filtered_data = [r for r in filtered_data if r["tipo_reporte"] == tipo_reporte]
+            query = text(f"{query.text} AND tipo_reporte = :tipo_reporte")
+            params["tipo_reporte"] = tipo_reporte
+            
         if estado:
-            filtered_data = [r for r in filtered_data if r["estado"] == estado]
-        # Filtros de fecha se aplicarían aquí
-
+            query = text(f"{query.text} AND estado = :estado")
+            params["estado"] = estado
+            
+        if fecha_inicio:
+            query = text(f"{query.text} AND fecha_generacion >= :fecha_inicio")
+            params["fecha_inicio"] = fecha_inicio
+            
+        if fecha_fin:
+            query = text(f"{query.text} AND fecha_generacion <= :fecha_fin")
+            params["fecha_fin"] = fecha_fin + " 23:59:59"  # Incluir todo el día
+        
+        # Ordenar por fecha de generación descendente
+        query = text(f"{query.text} ORDER BY fecha_generacion DESC")
+        
+        # Ejecutar consulta
+        result = db.execute(query, params)
+        reportes = result.fetchall()
+        
         # Crear CSV en memoria
         output = io.StringIO()
         writer = csv.writer(output, quoting=csv.QUOTE_NONNUMERIC)
@@ -236,18 +248,18 @@ async def exportar_reportes_csv(
         writer.writerow(headers)
 
         # Escribir datos
-        for reporte in filtered_data:
+        for reporte in reportes:
             writer.writerow([
-                reporte["id_reporte"],
-                reporte["titulo"],
-                reporte["descripcion"],
-                reporte["tipo_reporte"],
-                reporte["severidad"],
-                reporte["estado"],
-                reporte["fecha_generacion"].strftime("%Y-%m-%d %H:%M:%S"),
-                reporte["fecha_cierre"].strftime("%Y-%m-%d %H:%M:%S") if reporte["fecha_cierre"] else "",
-                reporte["id_acceso_relacionado"] or "",
-                reporte["id_dispositivo"] or ""
+                reporte.id_reporte,
+                reporte.titulo,
+                reporte.descripcion,
+                reporte.tipo_reporte,
+                reporte.severidad,
+                reporte.estado,
+                reporte.fecha_generacion.strftime("%Y-%m-%d %H:%M:%S") if reporte.fecha_generacion else "",
+                reporte.fecha_cierre.strftime("%Y-%m-%d %H:%M:%S") if reporte.fecha_cierre else "",
+                reporte.id_acceso_relacionado or "",
+                reporte.id_dispositivo or ""
             ])
 
         output.seek(0)
@@ -273,39 +285,60 @@ async def exportar_accesos_csv(
     estado_registro: Optional[str] = Query(None, description="Filtrar por tipo de registro (ENTRADA/SALIDA)"),
     resultado: Optional[str] = Query(None, description="Filtrar por resultado (Éxito/Fallo)"),
     fecha_inicio: Optional[str] = Query(None, description="Fecha de inicio (YYYY-MM-DD)"),
-    fecha_fin: Optional[str] = Query(None, description="Fecha de fin (YYYY-MM-DD)")
+    fecha_fin: Optional[str] = Query(None, description="Fecha de fin (YYYY-MM-DD)"),
+    db: Session = Depends(get_db)
 ):
     """
     Exporta historial de accesos a formato CSV con filtros opcionales.
     """
     try:
-        # Simulación de datos - reemplaza con tu consulta a la base de datos
-        accesos = [
-            {
-                "id_acceso": 1,
-                "nombre_completo": "Juan Pérez",
-                "dispositivo": "Puerta Principal",
-                "fecha": datetime.now(),
-                "estado_registro": "ENTRADA",
-                "resultado": "Éxito",
-                "confianza": 0.95,
-                "horas_extras": 0.0,
-                "es_dia_laboral": True,
-                "razon": "",
-                "reporte_relacionado": None,
-                "foto_url": "/fotos/acceso1.jpg"
-            },
-            # Agrega más datos de prueba o conecta con tu base de datos real
-        ]
-
-        # Aplicar filtros (en una implementación real, esto sería parte de tu consulta SQL)
-        filtered_data = accesos
+        # Construir la consulta SQL base con JOIN para obtener el nombre de la persona
+        query = text("""
+            SELECT 
+                ha.id_acceso, 
+                CONCAT(p.nombre, ' ', p.apellido_paterno, ' ', COALESCE(p.apellido_materno, '')) AS nombre_completo,
+                d.nombre AS dispositivo,
+                ha.fecha,
+                ha.estado_registro,
+                ha.resultado,
+                ha.confianza,
+                ha.horas_extras,
+                ha.es_dia_laboral,
+                ha.razon,
+                ha.id_reporte_relacionado,
+                ha.foto_url
+            FROM historial_accesos ha
+            LEFT JOIN personas p ON ha.id_persona = p.id_persona
+            LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
+            WHERE 1=1
+        """)
+        
+        params = {}
+        
+        # Aplicar filtros
         if estado_registro:
-            filtered_data = [a for a in filtered_data if a["estado_registro"] == estado_registro]
+            query = text(f"{query.text} AND ha.estado_registro = :estado_registro")
+            params["estado_registro"] = estado_registro
+            
         if resultado:
-            filtered_data = [a for a in filtered_data if a["resultado"] == resultado]
-        # Filtros de fecha se aplicarían aquí
-
+            query = text(f"{query.text} AND ha.resultado = :resultado")
+            params["resultado"] = resultado
+            
+        if fecha_inicio:
+            query = text(f"{query.text} AND ha.fecha >= :fecha_inicio")
+            params["fecha_inicio"] = fecha_inicio
+            
+        if fecha_fin:
+            query = text(f"{query.text} AND ha.fecha <= :fecha_fin")
+            params["fecha_fin"] = fecha_fin + " 23:59:59"  # Incluir todo el día
+        
+        # Ordenar por fecha descendente
+        query = text(f"{query.text} ORDER BY ha.fecha DESC")
+        
+        # Ejecutar consulta
+        result = db.execute(query, params)
+        accesos = result.fetchall()
+        
         # Crear CSV en memoria
         output = io.StringIO()
         writer = csv.writer(output, quoting=csv.QUOTE_NONNUMERIC)
@@ -319,20 +352,20 @@ async def exportar_accesos_csv(
         writer.writerow(headers)
 
         # Escribir datos
-        for acceso in filtered_data:
+        for acceso in accesos:
             writer.writerow([
-                acceso["id_acceso"],
-                acceso["nombre_completo"],
-                acceso["dispositivo"],
-                acceso["fecha"].strftime("%Y-%m-%d %H:%M:%S"),
-                acceso["estado_registro"],
-                acceso["resultado"],
-                f"{acceso['confianza']:.2f}" if acceso["confianza"] is not None else "",
-                f"{acceso['horas_extras']:.2f}" if acceso["horas_extras"] else "0.00",
-                "Sí" if acceso["es_dia_laboral"] else "No",
-                acceso["razon"] or "",
-                acceso["reporte_relacionado"] or "",
-                acceso["foto_url"] or ""
+                acceso.id_acceso,
+                acceso.nombre_completo,
+                acceso.dispositivo or "",
+                acceso.fecha.strftime("%Y-%m-%d %H:%M:%S"),
+                acceso.estado_registro or "",
+                acceso.resultado,
+                f"{acceso.confianza:.2f}" if acceso.confianza is not None else "",
+                f"{acceso.horas_extras:.2f}" if acceso.horas_extras else "0.00",
+                "Sí" if acceso.es_dia_laboral else "No",
+                acceso.razon or "",
+                acceso.id_reporte_relacionado or "",
+                acceso.foto_url or ""
             ])
 
         output.seek(0)
@@ -351,7 +384,6 @@ async def exportar_accesos_csv(
             status_code=500,
             detail=f"Error al generar el archivo CSV: {str(e)}"
         )
-
 
 @app.get("/", include_in_schema=False)
 def root():
