@@ -197,15 +197,26 @@ async def exportar_reportes_csv(
 ):
     """
     Exporta reportes a formato CSV con filtros opcionales.
+    Sin caracteres especiales.
     """
     try:
-        # Construir la consulta SQL base
+        # Consulta SQL
         query = text("""
             SELECT 
-                id_reporte, titulo, descripcion, tipo_reporte,
-                severidad, estado, fecha_generacion, fecha_cierre,
-                id_acceso_relacionado, id_dispositivo
-            FROM reportes
+                r.id_reporte, 
+                r.titulo, 
+                r.descripcion, 
+                r.tipo_reporte,
+                r.severidad, 
+                r.estado, 
+                r.fecha_generacion, 
+                r.fecha_cierre,
+                r.id_acceso_relacionado, 
+                r.id_dispositivo,
+                d.nombre AS dispositivo,
+                d.ubicacion AS ubicacion
+            FROM reportes r
+            LEFT JOIN dispositivos d ON r.id_dispositivo = d.id_dispositivo
             WHERE 1=1
         """)
         
@@ -213,64 +224,76 @@ async def exportar_reportes_csv(
         
         # Aplicar filtros
         if tipo_reporte:
-            query = text(f"{query.text} AND tipo_reporte = :tipo_reporte")
+            query = text(f"{query.text} AND r.tipo_reporte = :tipo_reporte")
             params["tipo_reporte"] = tipo_reporte
             
         if estado:
-            query = text(f"{query.text} AND estado = :estado")
+            query = text(f"{query.text} AND r.estado = :estado")
             params["estado"] = estado
             
         if fecha_inicio:
-            query = text(f"{query.text} AND fecha_generacion >= :fecha_inicio")
+            query = text(f"{query.text} AND r.fecha_generacion >= :fecha_inicio")
             params["fecha_inicio"] = fecha_inicio
             
         if fecha_fin:
-            query = text(f"{query.text} AND fecha_generacion <= :fecha_fin")
-            params["fecha_fin"] = fecha_fin + " 23:59:59"  # Incluir todo el día
+            query = text(f"{query.text} AND r.fecha_generacion <= :fecha_fin")
+            params["fecha_fin"] = fecha_fin + " 23:59:59"
         
-        # Ordenar por fecha de generación descendente
-        query = text(f"{query.text} ORDER BY fecha_generacion DESC")
+        query = text(f"{query.text} ORDER BY r.fecha_generacion DESC")
         
         # Ejecutar consulta
         result = db.execute(query, params)
         reportes = result.fetchall()
-        
+
+        # Función para eliminar acentos
+        def remove_accents(input_str):
+            replacements = {
+                'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
+                'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U',
+                'ñ': 'n', 'Ñ': 'N',
+                'ü': 'u', 'Ü': 'U'
+            }
+            return ''.join(replacements.get(c, c) for c in input_str)
+
         # Crear CSV en memoria
         output = io.StringIO()
         writer = csv.writer(output, quoting=csv.QUOTE_NONNUMERIC)
 
-        # Escribir encabezados
+        # Encabezados sin acentos
         headers = [
-            "ID Reporte", "Título", "Descripción", "Tipo de Reporte",
-            "Severidad", "Estado", "Fecha Generación", "Fecha Cierre",
-            "ID Acceso Relacionado", "ID Dispositivo"
+            "ID Reporte", "Titulo", "Descripcion", "Tipo de Reporte",
+            "Severidad", "Estado", "Fecha Generacion", "Fecha Cierre",
+            "ID Acceso Relacionado", "ID Dispositivo", "Dispositivo", "Ubicacion"
         ]
         writer.writerow(headers)
 
-        # Escribir datos
         for reporte in reportes:
             writer.writerow([
                 reporte.id_reporte,
-                reporte.titulo,
-                reporte.descripcion,
-                reporte.tipo_reporte,
-                reporte.severidad,
-                reporte.estado,
+                remove_accents(reporte.titulo) if reporte.titulo else "",
+                remove_accents(reporte.descripcion) if reporte.descripcion else "",
+                remove_accents(reporte.tipo_reporte) if reporte.tipo_reporte else "",
+                remove_accents(reporte.severidad) if reporte.severidad else "",
+                remove_accents(reporte.estado) if reporte.estado else "",
                 reporte.fecha_generacion.strftime("%Y-%m-%d %H:%M:%S") if reporte.fecha_generacion else "",
                 reporte.fecha_cierre.strftime("%Y-%m-%d %H:%M:%S") if reporte.fecha_cierre else "",
                 reporte.id_acceso_relacionado or "",
-                reporte.id_dispositivo or ""
+                reporte.id_dispositivo or "",
+                remove_accents(reporte.dispositivo) if reporte.dispositivo else "",
+                remove_accents(reporte.ubicacion) if reporte.ubicacion else ""
             ])
 
         output.seek(0)
         
-        # Configurar respuesta para descarga
         filename = f"reportes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
         return StreamingResponse(
-            iter([output.getvalue()]),
-            media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            iter([output.getvalue().encode('utf-8')]),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Type": "text/csv; charset=utf-8"
+            }
         )
 
     except Exception as e:
@@ -278,7 +301,7 @@ async def exportar_reportes_csv(
             status_code=500,
             detail=f"Error al generar el archivo CSV: {str(e)}"
         )
-
+        
 # Endpoint para exportar historial de accesos a CSV
 @app.get("/accesos/exportar-csv", response_class=StreamingResponse)
 async def exportar_accesos_csv(
@@ -290,15 +313,16 @@ async def exportar_accesos_csv(
 ):
     """
     Exporta historial de accesos a formato CSV con filtros opcionales.
-    Los caracteres especiales se reemplazan por equivalentes sin acentos.
+    Incluye ubicación del dispositivo y sin caracteres especiales.
     """
     try:
-        # Consulta SQL
+        # Consulta SQL con ubicación del dispositivo
         query = text("""
             SELECT 
                 ha.id_acceso, 
                 CONCAT(p.nombre, ' ', p.apellido_paterno, ' ', COALESCE(p.apellido_materno, '')) AS nombre_completo,
                 d.nombre AS dispositivo,
+                d.ubicacion AS ubicacion,
                 ha.fecha,
                 ha.estado_registro,
                 ha.resultado,
@@ -334,58 +358,51 @@ async def exportar_accesos_csv(
         
         query = text(f"{query.text} ORDER BY ha.fecha DESC")
         
-        # Ejecutar consulta y obtener resultados
+        # Ejecutar consulta
         result = db.execute(query, params)
-        accesos = result.fetchall()  # Esta línea faltaba en tu código original
+        accesos = result.fetchall()
 
         # Función para eliminar acentos
         def remove_accents(input_str):
             replacements = {
                 'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
                 'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U',
-                'ñ': 'n', 'Ñ': 'N'
+                'ñ': 'n', 'Ñ': 'N',
+                'ü': 'u', 'Ü': 'U'
             }
-            for orig, repl in replacements.items():
-                input_str = input_str.replace(orig, repl)
-            return input_str
+            return ''.join(replacements.get(c, c) for c in input_str)
 
-        # Crear CSV en memoria con codificación UTF-8
+        # Crear CSV en memoria
         output = io.StringIO()
         writer = csv.writer(output, quoting=csv.QUOTE_NONNUMERIC)
 
         # Encabezados sin acentos
         headers = [
-            "ID Acceso", "Nombre Completo", "Dispositivo", "Fecha y Hora",
-            "Tipo de Registro", "Resultado", "Nivel de Confianza", "Horas Extras",
-            "Dia Laboral", "Razon", "URL Foto"
+            "ID Acceso", "Nombre Completo", "Dispositivo", "Ubicacion",
+            "Fecha y Hora", "Tipo de Registro", "Resultado", 
+            "Nivel de Confianza", "Horas Extras", "Dia Laboral", 
+            "Razon", "URL Foto"
         ]
         writer.writerow(headers)
 
         for acceso in accesos:
-            # Procesar campos de texto para eliminar acentos
-            nombre = remove_accents(acceso.nombre_completo) if acceso.nombre_completo else ""
-            dispositivo = remove_accents(acceso.dispositivo) if acceso.dispositivo else ""
-            estado = remove_accents(acceso.estado_registro) if acceso.estado_registro else ""
-            resultado = remove_accents(acceso.resultado) if acceso.resultado else ""
-            razon = remove_accents(acceso.razon) if acceso.razon else ""
-
             writer.writerow([
                 acceso.id_acceso,
-                nombre,
-                dispositivo,
+                remove_accents(acceso.nombre_completo) if acceso.nombre_completo else "",
+                remove_accents(acceso.dispositivo) if acceso.dispositivo else "",
+                remove_accents(acceso.ubicacion) if acceso.ubicacion else "",
                 acceso.fecha.strftime("%Y-%m-%d %H:%M:%S"),
-                estado,
-                resultado,
+                remove_accents(acceso.estado_registro) if acceso.estado_registro else "",
+                remove_accents(acceso.resultado) if acceso.resultado else "",
                 f"{acceso.confianza:.2f}" if acceso.confianza is not None else "",
                 f"{acceso.horas_extras:.2f}" if acceso.horas_extras else "0.00",
                 "Si" if acceso.es_dia_laboral else "No",
-                razon,
+                remove_accents(acceso.razon) if acceso.razon else "",
                 acceso.foto_url or ""
             ])
 
         output.seek(0)
         
-        # Configurar respuesta con codificación UTF-8
         filename = f"accesos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
         return StreamingResponse(
