@@ -305,7 +305,7 @@ async def exportar_accesos_csv(
                 ha.horas_extras,
                 ha.es_dia_laboral,
                 ha.razon,
-                ha.reporte_relacionado,  # Cambiado de id_reporte_relacionado a reporte_relacionado
+                ha.reporte_relacionado,
                 ha.foto_url
             FROM historial_accesos ha
             LEFT JOIN personas p ON ha.id_persona = p.id_persona
