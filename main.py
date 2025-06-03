@@ -67,6 +67,7 @@ class User(BaseModel):
     id_persona: int
     nombre: str
     apellido_paterno: str
+    apellido_materno: Optional[str] = None  
     correo: str
     telefono: str
     rol: str
@@ -376,16 +377,18 @@ def get_access_records(
 
 @app.get("/users", response_model=List[User])
 def get_users(
-    active_only: bool = True,
-    search: Optional[str] = None,
+    search: Optional[str] = Query(None, description="Texto para buscar en nombres, apellidos, correo o teléfono"),
+    active_only: bool = Query(True, description="Filtrar solo usuarios activos"),
     db: Session = Depends(get_db)
 ):
     try:
-        query = """
+        # Consulta base con JOINs necesarios
+        query = text("""
             SELECT 
                 p.id_persona, 
                 p.nombre, 
-                p.apellido_paterno, 
+                p.apellido_paterno,
+                p.apellido_materno,
                 p.correo_electronico as correo, 
                 p.telefono,
                 r.nombre as rol, 
@@ -394,22 +397,55 @@ def get_users(
             JOIN cuentas c ON p.id_persona = c.id_persona
             JOIN roles r ON c.id_rol = r.id_rol
             WHERE (:active_only = FALSE OR p.activo = TRUE)
-        """
+        """)
 
         params = {"active_only": active_only}
 
+        # Si hay texto de búsqueda, añadimos condiciones
         if search:
-            query += " AND (p.nombre ILIKE :search OR p.apellido_paterno ILIKE :search OR p.correo_electronico ILIKE :search)"
-            params["search"] = f"%{search}%"
+            search_query = """
+                AND (
+                    p.nombre ILIKE :search 
+                    OR p.apellido_paterno ILIKE :search
+                    OR p.apellido_materno ILIKE :search
+                    OR p.correo_electronico ILIKE :search
+                    OR p.telefono ILIKE :search
+                    OR CONCAT(p.nombre, ' ', p.apellido_paterno) ILIKE :search
+                    OR CONCAT(p.nombre, ' ', p.apellido_paterno, ' ', p.apellido_materno) ILIKE :search
+                )
+            """
+            query = text(str(query) + search_query)
+            params["search"] = f"%{search.strip()}%"
 
-        result = db.execute(text(query), params)
-        users = [dict(row._asdict()) for row in result]
+        # Ordenamos por nombre
+        query = text(str(query) + " ORDER BY p.nombre, p.apellido_paterno")
+
+        # Ejecutamos la consulta
+        result = db.execute(query, params)
+        
+        # Procesamos los resultados
+        users = []
+        for row in result:
+            user = {
+                "id_persona": row.id_persona,
+                "nombre": row.nombre,
+                "apellido_paterno": row.apellido_paterno,
+                "apellido_materno": row.apellido_materno,
+                "correo": row.correo,
+                "telefono": row.telefono,
+                "rol": row.rol,
+                "activo": row.activo
+            }
+            users.append(user)
         
         return users
 
     except Exception as e:
-        logger.error(f"Error getting users: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error retrieving users")
+        logger.error(f"Error al obtener usuarios: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al recuperar los usuarios de la base de datos"
+        )
 
 @app.get("/reports", response_model=List[Report])
 def get_reports(
