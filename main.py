@@ -55,10 +55,13 @@ class AccessRecord(BaseModel):
     id_acceso: int
     nombre_completo: str
     fecha: datetime
-    dispositivo: str
+    dispositivo: Optional[str] = None
     estado_registro: str
-    confianza: Optional[float]
-    foto_url: Optional[str]
+    confianza: Optional[float] = None
+    foto_url: Optional[str] = None
+
+    class Config:
+        orm_mode = True  # Permite la conversión desde ORM
 
 class User(BaseModel):
     id_persona: int
@@ -260,44 +263,45 @@ def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
 def get_stats(db: Session = Depends(get_db)):
     """Obtiene estadísticas generales para el dashboard"""
     try:
-        # Estadísticas básicas
+        # Convertir resultados a diccionarios explícitamente
         total_entries = db.execute(text("SELECT COUNT(*) FROM historial_accesos")).scalar()
         today_entries = db.execute(
             text("SELECT COUNT(*) FROM historial_accesos WHERE DATE(fecha) = CURRENT_DATE")
         ).scalar()
         late_entries = db.execute(
-            text("""
-                SELECT COUNT(*) FROM historial_accesos 
-                WHERE estado_registro LIKE 'RETRASO%'
-            """)
+            text("SELECT COUNT(*) FROM historial_accesos WHERE estado_registro LIKE 'RETRASO%'")
         ).scalar()
         active_users = db.execute(
             text("SELECT COUNT(*) FROM personas WHERE activo = TRUE")
         ).scalar()
 
-        # Últimos 10 accesos
-        recent_access = db.execute(
+        # Últimos 10 accesos - convertir filas a diccionarios
+        recent_access_result = db.execute(
             text("""
-                SELECT h.id_acceso, 
-                       CONCAT(p.nombre, ' ', p.apellido_paterno) as nombre_completo,
-                       h.fecha, 
-                       d.nombre as dispositivo,
-                       h.estado_registro,
-                       h.confianza,
-                       h.foto_url
+                SELECT 
+                    h.id_acceso, 
+                    CONCAT(p.nombre, ' ', p.apellido_paterno) as nombre_completo,
+                    h.fecha, 
+                    d.nombre as dispositivo,
+                    h.estado_registro,
+                    h.confianza,
+                    h.foto_url
                 FROM historial_accesos h
                 JOIN personas p ON h.id_persona = p.id_persona
                 LEFT JOIN dispositivos d ON h.id_dispositivo = d.id_dispositivo
                 ORDER BY h.fecha DESC
                 LIMIT 10
             """)
-        ).fetchall()
+        )
+        
+        # Convertir resultados a diccionarios
+        recent_access = [dict(row._asdict()) for row in recent_access_result]
 
         return {
-            "total_entries": total_entries,
-            "today_entries": today_entries,
-            "late_entries": late_entries,
-            "active_users": active_users,
+            "total_entries": total_entries or 0,
+            "today_entries": today_entries or 0,
+            "late_entries": late_entries or 0,
+            "active_users": active_users or 0,
             "recent_access": recent_access
         }
 
@@ -317,45 +321,49 @@ def get_access_records(
 ):
     """Obtiene registros de acceso con filtros"""
     try:
-        query = text("""
-            SELECT h.id_acceso, 
-                   CONCAT(p.nombre, ' ', p.apellido_paterno) as nombre_completo,
-                   h.fecha, 
-                   d.nombre as dispositivo,
-                   h.estado_registro,
-                   h.confianza,
-                   h.foto_url
+        base_query = """
+            SELECT 
+                h.id_acceso, 
+                CONCAT(p.nombre, ' ', p.apellido_paterno) as nombre_completo,
+                h.fecha, 
+                d.nombre as dispositivo,
+                h.estado_registro,
+                h.confianza,
+                h.foto_url
             FROM historial_accesos h
             JOIN personas p ON h.id_persona = p.id_persona
             LEFT JOIN dispositivos d ON h.id_dispositivo = d.id_dispositivo
-            WHERE 1=1
-        """)
-
+        """
+        
+        where_clauses = []
         params = {}
-        conditions = []
-
+        
         if start_date:
-            conditions.append("h.fecha >= :start_date")
+            where_clauses.append("h.fecha >= :start_date")
             params["start_date"] = start_date
         if end_date:
-            conditions.append("h.fecha <= :end_date")
+            where_clauses.append("h.fecha <= :end_date")
             params["end_date"] = end_date
         if status:
-            conditions.append("h.estado_registro = :status")
+            where_clauses.append("h.estado_registro = :status")
             params["status"] = status
         if user_id:
-            conditions.append("h.id_persona = :user_id")
+            where_clauses.append("h.id_persona = :user_id")
             params["user_id"] = user_id
-
-        if conditions:
-            query = text(f"{query.text} {' AND '.join(conditions)}")
-
-        query = text(f"{query.text} ORDER BY h.fecha DESC LIMIT :limit OFFSET :offset")
+            
+        query = base_query
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
+            
+        query += " ORDER BY h.fecha DESC LIMIT :limit OFFSET :offset"
         params["limit"] = limit
         params["offset"] = (page - 1) * limit
-
-        results = db.execute(query, params).fetchall()
-        return results
+        
+        # Ejecutar consulta y convertir resultados
+        result = db.execute(text(query), params)
+        access_records = [dict(row._asdict()) for row in result]
+        
+        return access_records
 
     except Exception as e:
         logger.error(f"Error getting access records: {str(e)}")
