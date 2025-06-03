@@ -53,16 +53,16 @@ class UsuarioRegistro(BaseModel):
 
 class AccessRecord(BaseModel):
     id_acceso: int
-    nombre_completo: str
+    nombre_completo: Optional[str] = None
     fecha: datetime
     dispositivo: Optional[str] = None
-    estado_registro: str
+    estado_registro: Optional[str] = None
     confianza: Optional[float] = None
     foto_url: Optional[str] = None
 
     class Config:
-        orm_mode = True  # Permite la conversión desde ORM
-
+        orm_mode = True
+        
 class User(BaseModel):
     id_persona: int
     nombre: str
@@ -71,6 +71,9 @@ class User(BaseModel):
     telefono: str
     rol: str
     activo: bool
+
+    class Config:
+        orm_mode = True
 
 class StatsResponse(BaseModel):
     total_entries: int
@@ -86,6 +89,9 @@ class Report(BaseModel):
     severidad: str
     estado: str
     fecha_generacion: datetime
+
+    class Config:
+        orm_mode = True
 # --- Endpoints ---
 @app.get("/")
 def read_root():
@@ -261,21 +267,20 @@ def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
 
 @app.get("/stats", response_model=StatsResponse)
 def get_stats(db: Session = Depends(get_db)):
-    """Obtiene estadísticas generales para el dashboard"""
     try:
         # Convertir resultados a diccionarios explícitamente
-        total_entries = db.execute(text("SELECT COUNT(*) FROM historial_accesos")).scalar()
+        total_entries = db.execute(text("SELECT COUNT(*) FROM historial_accesos")).scalar() or 0
         today_entries = db.execute(
             text("SELECT COUNT(*) FROM historial_accesos WHERE DATE(fecha) = CURRENT_DATE")
-        ).scalar()
+        ).scalar() or 0
         late_entries = db.execute(
             text("SELECT COUNT(*) FROM historial_accesos WHERE estado_registro LIKE 'RETRASO%'")
-        ).scalar()
+        ).scalar() or 0
         active_users = db.execute(
             text("SELECT COUNT(*) FROM personas WHERE activo = TRUE")
-        ).scalar()
+        ).scalar() or 0
 
-        # Últimos 10 accesos - convertir filas a diccionarios
+        # Últimos 10 accesos
         recent_access_result = db.execute(
             text("""
                 SELECT 
@@ -298,10 +303,10 @@ def get_stats(db: Session = Depends(get_db)):
         recent_access = [dict(row._asdict()) for row in recent_access_result]
 
         return {
-            "total_entries": total_entries or 0,
-            "today_entries": today_entries or 0,
-            "late_entries": late_entries or 0,
-            "active_users": active_users or 0,
+            "total_entries": total_entries,
+            "today_entries": today_entries,
+            "late_entries": late_entries,
+            "active_users": active_users,
             "recent_access": recent_access
         }
 
@@ -319,7 +324,6 @@ def get_access_records(
     limit: int = 20,
     db: Session = Depends(get_db)
 ):
-    """Obtiene registros de acceso con filtros"""
     try:
         base_query = """
             SELECT 
@@ -369,32 +373,39 @@ def get_access_records(
         logger.error(f"Error getting access records: {str(e)}")
         raise HTTPException(status_code=500, detail="Error retrieving access records")
 
+
 @app.get("/users", response_model=List[User])
 def get_users(
     active_only: bool = True,
     search: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """Obtiene lista de usuarios"""
     try:
-        query = text("""
-            SELECT p.id_persona, p.nombre, p.apellido_paterno, 
-                   p.correo_electronico as correo, p.telefono,
-                   r.nombre as rol, p.activo
+        query = """
+            SELECT 
+                p.id_persona, 
+                p.nombre, 
+                p.apellido_paterno, 
+                p.correo_electronico as correo, 
+                p.telefono,
+                r.nombre as rol, 
+                p.activo
             FROM personas p
             JOIN cuentas c ON p.id_persona = c.id_persona
             JOIN roles r ON c.id_rol = r.id_rol
             WHERE (:active_only = FALSE OR p.activo = TRUE)
-        """)
+        """
 
         params = {"active_only": active_only}
 
         if search:
-            query = text(f"{query.text} AND (p.nombre ILIKE :search OR p.apellido_paterno ILIKE :search OR p.correo_electronico ILIKE :search)")
+            query += " AND (p.nombre ILIKE :search OR p.apellido_paterno ILIKE :search OR p.correo_electronico ILIKE :search)"
             params["search"] = f"%{search}%"
 
-        results = db.execute(query, params).fetchall()
-        return results
+        result = db.execute(text(query), params)
+        users = [dict(row._asdict()) for row in result]
+        
+        return users
 
     except Exception as e:
         logger.error(f"Error getting users: {str(e)}")
@@ -407,34 +418,37 @@ def get_reports(
     severity: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """Obtiene reportes filtrados"""
     try:
-        query = text("""
-            SELECT id_reporte, titulo, tipo_reporte, severidad, estado, fecha_generacion
+        query = """
+            SELECT 
+                id_reporte, 
+                titulo, 
+                tipo_reporte, 
+                severidad, 
+                estado, 
+                fecha_generacion
             FROM reportes
             WHERE 1=1
-        """)
+        """
 
         params = {}
-        conditions = []
-
+        
         if report_type:
-            conditions.append("tipo_reporte = :report_type")
+            query += " AND tipo_reporte = :report_type"
             params["report_type"] = report_type
         if status:
-            conditions.append("estado = :status")
+            query += " AND estado = :status"
             params["status"] = status
         if severity:
-            conditions.append("severidad = :severity")
+            query += " AND severidad = :severity"
             params["severity"] = severity
-
-        if conditions:
-            query = text(f"{query.text} {' AND '.join(conditions)}")
-
-        query = text(f"{query.text} ORDER BY fecha_generacion DESC LIMIT 50")
-
-        results = db.execute(query, params).fetchall()
-        return results
+            
+        query += " ORDER BY fecha_generacion DESC LIMIT 50"
+        
+        result = db.execute(text(query), params)
+        reports = [dict(row._asdict()) for row in result]
+        
+        return reports
 
     except Exception as e:
         logger.error(f"Error getting reports: {str(e)}")
@@ -442,29 +456,25 @@ def get_reports(
 
 @app.get("/reports/stats")
 def get_report_stats(db: Session = Depends(get_db)):
-    """Obtiene estadísticas de reportes"""
     try:
         today = datetime.now().date()
         
-        # Reportes de hoy
         today_reports = db.execute(
             text("SELECT COUNT(*) FROM reportes WHERE DATE(fecha_generacion) = :today"),
             {"today": today}
-        ).scalar()
+        ).scalar() or 0
         
-        # Accesos no autorizados
         unauthorized_access = db.execute(
             text("""
                 SELECT COUNT(*) FROM reportes 
                 WHERE tipo_reporte = 'Acceso no autorizado' 
                 AND estado != 'Cerrado'
             """)
-        ).scalar()
+        ).scalar() or 0
         
-        # Reportes abiertos
         open_reports = db.execute(
             text("SELECT COUNT(*) FROM reportes WHERE estado IN ('Abierto', 'En progreso')")
-        ).scalar()
+        ).scalar() or 0
 
         return {
             "today_reports": today_reports,
@@ -482,7 +492,6 @@ def update_user_status(
     active: bool,
     db: Session = Depends(get_db)
 ):
-    """Activa/desactiva un usuario"""
     try:
         db.execute(
             text("UPDATE personas SET activo = :active WHERE id_persona = :user_id"),
@@ -495,7 +504,6 @@ def update_user_status(
         db.rollback()
         logger.error(f"Error updating user status: {str(e)}")
         raise HTTPException(status_code=500, detail="Error updating user status")
-
 
 @app.get("/health")
 def health_check():
