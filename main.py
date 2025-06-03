@@ -30,6 +30,26 @@ class UserLogin(BaseModel):
     username: str
     password: str
 
+class RegistroPersona(BaseModel):
+    name: str  # Nombre(s)
+    lastName: str  # Primer apellido
+    secondLastName: Optional[str] = None  # Segundo apellido (opcional)
+    phone: str  # Teléfono completo (código + número)
+    email: EmailStr  # Correo electrónico
+
+class RegistroCuenta(BaseModel):
+    password: str  # Contraseña
+    confirmPassword: str  # Confirmación de contraseña
+
+    @validator('confirmPassword')
+    def passwords_match(cls, v, values):
+        if 'password' in values and v != values['password']:
+            raise ValueError('Las contraseñas no coinciden')
+        return v
+
+class UsuarioRegistro(BaseModel):
+    persona: RegistroPersona
+    cuenta: RegistroCuenta
 # --- Endpoints ---
 @app.get("/")
 def read_root():
@@ -96,7 +116,113 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
             detail="Error interno del servidor"
         )
 
-        
+
+@app.post("/registrar/", status_code=status.HTTP_201_CREATED)
+def registrar_usuario(usuario: UsuarioRegistro, db: Session = Depends(get_db)):
+    try:
+        logger.info(f"Intento de registro para: {usuario.persona.email}")
+
+        # Verificar si el correo ya existe
+        correo_existente = db.execute(
+            text("SELECT 1 FROM personas WHERE correo_electronico = :correo"),
+            {"correo": usuario.persona.email}
+        ).scalar()
+
+        if correo_existente:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El correo electrónico ya está registrado"
+            )
+
+        # Verificar si el nombre de usuario ya existe
+        nombre_usuario = usuario.persona.email.split('@')[0]
+        usuario_existente = db.execute(
+            text("SELECT 1 FROM cuentas WHERE nombre_usuario = :username"),
+            {"username": nombre_usuario}
+        ).scalar()
+
+        if usuario_existente:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El nombre de usuario ya está en uso"
+            )
+
+        # Hashear contraseña
+        hashed_password = bcrypt.hashpw(
+            usuario.cuenta.password.encode('utf-8'),
+            bcrypt.gensalt()
+        ).decode('utf-8')
+
+        # Insertar persona
+        result_persona = db.execute(
+            text("""
+                INSERT INTO personas (
+                    nombre, apellido_paterno, apellido_materno, 
+                    telefono, correo_electronico, fecha_registro, activo
+                ) 
+                VALUES (
+                    :nombre, :apellido_paterno, :apellido_materno, 
+                    :telefono, :correo, :fecha_registro, TRUE
+                )
+                RETURNING id_persona
+            """),
+            {
+                "nombre": usuario.persona.name,
+                "apellido_paterno": usuario.persona.lastName,
+                "apellido_materno": usuario.persona.secondLastName,
+                "telefono": usuario.persona.phone,
+                "correo": usuario.persona.email,
+                "fecha_registro": datetime.now()
+            }
+        )
+        id_persona = result_persona.scalar_one()
+
+        # Insertar cuenta
+        db.execute(
+            text("""
+                INSERT INTO cuentas (
+                    id_persona, id_rol, nombre_usuario, 
+                    contrasena_hash, sal, ultimo_acceso
+                ) 
+                VALUES (
+                    :id_persona, 
+                    1,  -- Rol de Administrador
+                    :nombre_usuario, 
+                    :contrasena_hash, 
+                    '',  -- Sal (ya incluida en bcrypt)
+                    :ultimo_acceso
+                )
+            """),
+            {
+                "id_persona": id_persona,
+                "nombre_usuario": nombre_usuario,
+                "contrasena_hash": hashed_password,
+                "ultimo_acceso": datetime.now()
+            }
+        )
+
+        db.commit()
+        logger.info(f"Usuario administrador registrado exitosamente: {usuario.persona.email}")
+
+        return {
+            "status": "success",
+            "id_persona": id_persona,
+            "nombre_usuario": nombre_usuario,
+            "message": "Usuario administrador registrado exitosamente"
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error inesperado: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno del servidor"
+        )
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "auth-api"}
