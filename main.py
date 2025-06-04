@@ -60,10 +60,12 @@ class ResumenAccesos(BaseModel):
     ultima_actualizacion: datetime
 
 class FiltroHistorial(BaseModel):
-    nombre_usuario: Optional[str] = None
+    nombre: Optional[str] = None
+    apellido: Optional[str] = None
     fecha_inicio: Optional[datetime] = None
     fecha_fin: Optional[datetime] = None
     estado_registro: Optional[str] = None
+    resultado: Optional[str] = Field(None, regex='^(Éxito|Fallo|Desconocido)$')
 
 class UsuarioCompleto(BaseModel):
     id_persona: int
@@ -324,21 +326,33 @@ def obtener_resumen(db: Session = Depends(get_db)):
 
 @app.post("/historial/filtrar/")
 def filtrar_historial(filtro: FiltroHistorial, db: Session = Depends(get_db)):
-    """Endpoint para filtrar el historial de accesos"""
+    """Endpoint para filtrar el historial de accesos (versión simplificada)"""
     try:
         query = text("""
-            SELECT ha.*, p.nombre, p.apellido_paterno, p.apellido_materno, c.nombre_usuario
+            SELECT 
+                ha.id_acceso,
+                ha.fecha,
+                ha.resultado,
+                ha.estado_registro,
+                ha.confianza,
+                ha.id_dispositivo,
+                p.nombre,
+                p.apellido_paterno,
+                p.apellido_materno
             FROM historial_accesos ha
             JOIN personas p ON ha.id_persona = p.id_persona
-            JOIN cuentas c ON p.id_persona = c.id_persona
             WHERE 1=1
         """)
         params = {}
 
         # Aplicar filtros
-        if filtro.nombre_usuario:
-            query = text(f"{query.text} AND c.nombre_usuario LIKE :nombre_usuario")
-            params["nombre_usuario"] = f"%{filtro.nombre_usuario}%"
+        if filtro.nombre:
+            query = text(f"{query.text} AND p.nombre ILIKE :nombre")
+            params["nombre"] = f"%{filtro.nombre}%"
+        
+        if filtro.apellido:
+            query = text(f"{query.text} AND (p.apellido_paterno ILIKE :apellido OR p.apellido_materno ILIKE :apellido)")
+            params["apellido"] = f"%{filtro.apellido}%"
         
         if filtro.fecha_inicio:
             query = text(f"{query.text} AND ha.fecha >= :fecha_inicio")
@@ -351,6 +365,10 @@ def filtrar_historial(filtro: FiltroHistorial, db: Session = Depends(get_db)):
         if filtro.estado_registro:
             query = text(f"{query.text} AND ha.estado_registro = :estado_registro")
             params["estado_registro"] = filtro.estado_registro
+            
+        if filtro.resultado:
+            query = text(f"{query.text} AND ha.resultado = :resultado")
+            params["resultado"] = filtro.resultado
 
         query = text(f"{query.text} ORDER BY ha.fecha DESC")
         result = db.execute(query, params)
@@ -360,7 +378,6 @@ def filtrar_historial(filtro: FiltroHistorial, db: Session = Depends(get_db)):
             historial.append({
                 "id_acceso": row.id_acceso,
                 "nombre_completo": f"{row.nombre} {row.apellido_paterno} {row.apellido_materno or ''}".strip(),
-                "nombre_usuario": row.nombre_usuario,
                 "fecha": row.fecha,
                 "resultado": row.resultado,
                 "estado_registro": row.estado_registro,
@@ -376,7 +393,6 @@ def filtrar_historial(filtro: FiltroHistorial, db: Session = Depends(get_db)):
             status_code=500,
             detail="Error interno al filtrar el historial"
         )
-
 @app.get("/usuarios/buscar/", response_model=List[dict])
 def buscar_usuarios_simple(
     nombre: Optional[str] = None,
