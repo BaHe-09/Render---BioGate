@@ -82,7 +82,14 @@ class UsuarioCompleto(BaseModel):
 
 class FiltroReportes(BaseModel):
     estado: Optional[str] = None
-    limit: int = 5
+    tipo_reporte: Optional[str] = None
+    severidad: Optional[str] = None
+    limit: int = Field(5, ge=1, le=10) 
+
+class FiltroUsuario(BaseModel):
+    nombre: Optional[str] = None
+    apellido: Optional[str] = None
+    limit: int = Field(10, ge=1, le=10)  
 # --- Endpoints ---
 @app.get("/")
 def read_root():
@@ -371,48 +378,99 @@ def filtrar_historial(filtro: FiltroHistorial, db: Session = Depends(get_db)):
         )
 
 @app.get("/usuarios/buscar/", response_model=List[UsuarioCompleto])
-def buscar_usuarios(nombre: str = Query(..., min_length=1), db: Session = Depends(get_db)):
-    """Endpoint para buscar usuarios por nombre y mostrar información completa"""
+def buscar_usuarios(
+    filtro: FiltroUsuario = Depends(),
+    db: Session = Depends(get_db)
+):
+    """Endpoint para buscar usuarios por nombre, apellido o ambos"""
     try:
-        # Buscar personas por nombre
-        query_personas = text("""
-            SELECT p.*, c.nombre_usuario, r.nombre as rol
+        # Validar que al menos un criterio de búsqueda esté presente
+        if not filtro.nombre and not filtro.apellido:
+            raise HTTPException(
+                status_code=400,
+                detail="Debe proporcionar al menos un nombre o apellido para buscar"
+            )
+
+        # Construir la consulta base
+        query = text("""
+            SELECT 
+                p.id_persona,
+                p.nombre,
+                p.apellido_paterno,
+                p.apellido_materno,
+                p.telefono,
+                p.correo_electronico,
+                p.activo,
+                c.nombre_usuario,
+                r.nombre as rol
             FROM personas p
             JOIN cuentas c ON p.id_persona = c.id_persona
             JOIN roles r ON c.id_rol = r.id_rol
-            WHERE p.nombre LIKE :nombre OR p.apellido_paterno LIKE :nombre
+            WHERE 1=1
         """)
-        result_personas = db.execute(query_personas, {"nombre": f"%{nombre}%"})
+        params = {}
+
+        # Añadir condiciones de búsqueda
+        conditions = []
+        if filtro.nombre:
+            conditions.append("p.nombre ILIKE :nombre")
+            params["nombre"] = f"%{filtro.nombre}%"
+        
+        if filtro.apellido:
+            conditions.append("(p.apellido_paterno ILIKE :apellido OR p.apellido_materno ILIKE :apellido)")
+            params["apellido"] = f"%{filtro.apellido}%"
+
+        if conditions:
+            query = text(f"{query.text} AND ({' OR '.join(conditions)})")
+
+        # Añadir límite
+        query = text(f"{query.text} ORDER BY p.nombre, p.apellido_paterno LIMIT :limit")
+        params["limit"] = filtro.limit
+
+        # Ejecutar consulta principal
+        result_personas = db.execute(query, params)
         
         usuarios = []
         for persona in result_personas:
-            # Obtener horario
+            # Obtener horario (si existe)
             query_horario = text("""
-                SELECT hora_entrada, hora_salida 
+                SELECT hora_entrada, hora_salida, dias_laborales
                 FROM horarios_persona 
                 WHERE id_persona = :id_persona
             """)
             horario = db.execute(query_horario, {"id_persona": persona.id_persona}).fetchone()
             
-            # Obtener accesos
+            # Obtener últimos 10 accesos (para no sobrecargar la respuesta)
             query_accesos = text("""
-                SELECT ha.*, d.nombre as dispositivo_nombre
+                SELECT 
+                    ha.fecha,
+                    ha.resultado,
+                    ha.estado_registro,
+                    ha.confianza,
+                    d.nombre as dispositivo
                 FROM historial_accesos ha
                 LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
                 WHERE ha.id_persona = :id_persona
                 ORDER BY ha.fecha DESC
+                LIMIT 10
             """)
             accesos_result = db.execute(query_accesos, {"id_persona": persona.id_persona})
             
-            accesos = []
-            for acceso in accesos_result:
-                accesos.append({
-                    "fecha": acceso.fecha,
-                    "dispositivo": acceso.dispositivo_nombre,
-                    "resultado": acceso.resultado,
-                    "estado_registro": acceso.estado_registro,
-                    "confianza": acceso.confianza
-                })
+            accesos = [{
+                "fecha": acceso.fecha,
+                "dispositivo": acceso.dispositivo,
+                "resultado": acceso.resultado,
+                "estado_registro": acceso.estado_registro,
+                "confianza": acceso.confianza
+            } for acceso in accesos_result]
+            
+            # Obtener total de accesos (para mostrar conteo)
+            query_total_accesos = text("""
+                SELECT COUNT(*) 
+                FROM historial_accesos 
+                WHERE id_persona = :id_persona
+            """)
+            total_accesos = db.execute(query_total_accesos, {"id_persona": persona.id_persona}).scalar_one()
             
             usuarios.append({
                 "id_persona": persona.id_persona,
@@ -426,57 +484,118 @@ def buscar_usuarios(nombre: str = Query(..., min_length=1), db: Session = Depend
                 "rol": persona.rol,
                 "hora_entrada": str(horario.hora_entrada) if horario else None,
                 "hora_salida": str(horario.hora_salida) if horario else None,
+                "dias_laborales": horario.dias_laborales if horario else None,
                 "accesos": accesos,
-                "total_accesos": len(accesos)
+                "total_accesos": total_accesos
             })
 
         return usuarios
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error al buscar usuarios: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail="Error interno al buscar usuarios"
         )
-
 @app.get("/reportes/", response_model=List[dict])
-def obtener_reportes(filtro: FiltroReportes = Depends(), db: Session = Depends(get_db)):
-    """Endpoint para obtener reportes filtrados por estado"""
+def obtener_reportes(
+    filtro: FiltroReportes = Depends(), 
+    db: Session = Depends(get_db)
+):
+    """Endpoint para obtener reportes filtrados por estado, tipo y severidad"""
     try:
+        # Validar valores de los filtros contra los permitidos en la base de datos
+        valid_estados = ['Abierto', 'En progreso', 'Resuelto', 'Cerrado']
+        valid_tipos = ['Error del sistema', 'Fallo autenticación', 'Fallo de dispositivo', 
+                      'Acceso no autorizado', 'Horario irregular', 'Otros']
+        valid_severidades = ['Baja', 'Media', 'Alta', 'Crítica']
+
+        if filtro.estado and filtro.estado not in valid_estados:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Estado no válido. Opciones: {', '.join(valid_estados)}"
+            )
+        
+        if filtro.tipo_reporte and filtro.tipo_reporte not in valid_tipos:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Tipo de reporte no válido. Opciones: {', '.join(valid_tipos)}"
+            )
+        
+        if filtro.severidad and filtro.severidad not in valid_severidades:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Severidad no válida. Opciones: {', '.join(valid_severidades)}"
+            )
+
+        # Construir la consulta SQL
         query = text("""
-            SELECT r.*, p.nombre, p.apellido_paterno
+            SELECT 
+                r.id_reporte,
+                r.titulo,
+                r.descripcion,
+                r.tipo_reporte,
+                r.severidad,
+                r.estado,
+                r.fecha_generacion,
+                r.fecha_cierre,
+                p.nombre || ' ' || p.apellido_paterno as persona,
+                d.nombre as dispositivo,
+                r.evidencias,
+                r.etiquetas
             FROM reportes r
             LEFT JOIN historial_accesos ha ON r.id_acceso_relacionado = ha.id_acceso
             LEFT JOIN personas p ON ha.id_persona = p.id_persona
+            LEFT JOIN dispositivos d ON r.id_dispositivo = d.id_dispositivo
             WHERE 1=1
         """)
         params = {}
         
+        # Aplicar filtros
         if filtro.estado:
             query = text(f"{query.text} AND r.estado = :estado")
             params["estado"] = filtro.estado
         
+        if filtro.tipo_reporte:
+            query = text(f"{query.text} AND r.tipo_reporte = :tipo_reporte")
+            params["tipo_reporte"] = filtro.tipo_reporte
+        
+        if filtro.severidad:
+            query = text(f"{query.text} AND r.severidad = :severidad")
+            params["severidad"] = filtro.severidad
+        
+        # Ordenar y limitar
         query = text(f"{query.text} ORDER BY r.fecha_generacion DESC LIMIT :limit")
         params["limit"] = filtro.limit
         
+        # Ejecutar consulta
         result = db.execute(query, params)
         
+        # Procesar resultados
         reportes = []
         for row in result:
-            reportes.append({
-                "id_reporte": row.id_reporte,
+            reporte = {
+                "id": row.id_reporte,
                 "titulo": row.titulo,
                 "descripcion": row.descripcion,
-                "tipo_reporte": row.tipo_reporte,
+                "tipo": row.tipo_reporte,
                 "severidad": row.severidad,
                 "estado": row.estado,
-                "fecha_generacion": row.fecha_generacion,
-                "persona": f"{row.nombre or ''} {row.apellido_paterno or ''}".strip() or None,
-                "evidencias": row.evidencias
-            })
+                "fecha_creacion": row.fecha_generacion,
+                "fecha_cierre": row.fecha_cierre,
+                "persona": row.persona,
+                "dispositivo": row.dispositivo,
+                "evidencias": row.evidencias or [],
+                "etiquetas": json.loads(row.etiquetas) if row.etiquetas else {}
+            }
+            reportes.append(reporte)
         
         return reportes
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error al obtener reportes: {str(e)}", exc_info=True)
         raise HTTPException(
