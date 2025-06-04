@@ -67,7 +67,7 @@ class FiltroHistorial(BaseModel):
     estado_registro: Optional[str] = None
     resultado: Optional[str] = None
     dispositivo_id: Optional[int] = None
-    limit: Optional[int] = Field(100, ge=1, le=100)
+    limit: Optional[int] = Field(5, ge=1, le=100)
 
 class UsuarioCompleto(BaseModel):
     id_persona: int
