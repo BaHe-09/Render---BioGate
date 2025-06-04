@@ -377,21 +377,23 @@ def filtrar_historial(filtro: FiltroHistorial, db: Session = Depends(get_db)):
             detail="Error interno al filtrar el historial"
         )
 
-@app.get("/usuarios/buscar/", response_model=List[UsuarioCompleto])
-def buscar_usuarios(
-    filtro: FiltroUsuario = Depends(),
+@app.get("/usuarios/buscar/", response_model=List[dict])
+def buscar_usuarios_simple(
+    nombre: Optional[str] = None,
+    apellido: Optional[str] = None,
+    limit: int = Query(10, ge=1, le=100),
     db: Session = Depends(get_db)
 ):
-    """Endpoint para buscar usuarios por nombre, apellido o ambos, incluyendo los sin rol"""
+    """Endpoint simplificado para buscar usuarios solo en personas y horarios"""
     try:
         # Validar que al menos un criterio de búsqueda esté presente
-        if not filtro.nombre and not filtro.apellido:
+        if not nombre and not apellido:
             raise HTTPException(
                 status_code=400,
                 detail="Debe proporcionar al menos un nombre o apellido para buscar"
             )
 
-        # Construir la consulta base con LEFT JOIN para roles
+        # Construir consulta base
         query = text("""
             SELECT 
                 p.id_persona,
@@ -401,92 +403,48 @@ def buscar_usuarios(
                 p.telefono,
                 p.correo_electronico,
                 p.activo,
-                c.nombre_usuario,
-                r.nombre as rol
+                hp.hora_entrada,
+                hp.hora_salida,
+                hp.dias_laborales
             FROM personas p
-            JOIN cuentas c ON p.id_persona = c.id_persona
-            LEFT JOIN roles r ON c.id_rol = r.id_rol  -- Cambiado a LEFT JOIN
+            LEFT JOIN horarios_persona hp ON p.id_persona = hp.id_persona
             WHERE 1=1
         """)
         params = {}
 
-        # Añadir condiciones de búsqueda (igual que antes)
+        # Añadir condiciones de búsqueda
         conditions = []
-        if filtro.nombre:
+        if nombre:
             conditions.append("p.nombre ILIKE :nombre")
-            params["nombre"] = f"%{filtro.nombre}%"
+            params["nombre"] = f"%{nombre}%"
         
-        if filtro.apellido:
+        if apellido:
             conditions.append("(p.apellido_paterno ILIKE :apellido OR p.apellido_materno ILIKE :apellido)")
-            params["apellido"] = f"%{filtro.apellido}%"
+            params["apellido"] = f"%{apellido}%"
 
         if conditions:
             query = text(f"{query.text} AND ({' OR '.join(conditions)})")
 
         # Añadir límite
         query = text(f"{query.text} ORDER BY p.nombre, p.apellido_paterno LIMIT :limit")
-        params["limit"] = filtro.limit
+        params["limit"] = limit
 
-        # Ejecutar consulta principal
-        result_personas = db.execute(query, params)
+        # Ejecutar consulta
+        result = db.execute(query, params)
         
         usuarios = []
-        for persona in result_personas:
-            # Obtener horario (si existe)
-            query_horario = text("""
-                SELECT hora_entrada, hora_salida, dias_laborales
-                FROM horarios_persona 
-                WHERE id_persona = :id_persona
-            """)
-            horario = db.execute(query_horario, {"id_persona": persona.id_persona}).fetchone()
-            
-            # Obtener últimos 10 accesos
-            query_accesos = text("""
-                SELECT 
-                    ha.fecha,
-                    ha.resultado,
-                    ha.estado_registro,
-                    ha.confianza,
-                    d.nombre as dispositivo
-                FROM historial_accesos ha
-                LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
-                WHERE ha.id_persona = :id_persona
-                ORDER BY ha.fecha DESC
-                LIMIT 10
-            """)
-            accesos_result = db.execute(query_accesos, {"id_persona": persona.id_persona})
-            
-            accesos = [{
-                "fecha": acceso.fecha,
-                "dispositivo": acceso.dispositivo,
-                "resultado": acceso.resultado,
-                "estado_registro": acceso.estado_registro,
-                "confianza": acceso.confianza
-            } for acceso in accesos_result]
-            
-            # Obtener total de accesos
-            query_total_accesos = text("""
-                SELECT COUNT(*) 
-                FROM historial_accesos 
-                WHERE id_persona = :id_persona
-            """)
-            total_accesos = db.execute(query_total_accesos, {"id_persona": persona.id_persona}).scalar_one()
-            
+        for row in result:
             usuarios.append({
-                "id_persona": persona.id_persona,
-                "nombre": persona.nombre,
-                "apellido_paterno": persona.apellido_paterno,
-                "apellido_materno": persona.apellido_materno,
-                "telefono": persona.telefono,
-                "correo_electronico": persona.correo_electronico,
-                "activo": persona.activo,
-                "nombre_usuario": persona.nombre_usuario,
-                "rol": persona.rol,  # Será None si no tiene rol asignado
-                "hora_entrada": str(horario.hora_entrada) if horario else None,
-                "hora_salida": str(horario.hora_salida) if horario else None,
-                "dias_laborales": horario.dias_laborales if horario else None,
-                "accesos": accesos,
-                "total_accesos": total_accesos
+                "id_persona": row.id_persona,
+                "nombre": row.nombre,
+                "apellido_paterno": row.apellido_paterno,
+                "apellido_materno": row.apellido_materno,
+                "telefono": row.telefono,
+                "correo_electronico": row.correo_electronico,
+                "activo": row.activo,
+                "hora_entrada": str(row.hora_entrada) if row.hora_entrada else None,
+                "hora_salida": str(row.hora_salida) if row.hora_salida else None,
+                "dias_laborales": row.dias_laborales
             })
 
         return usuarios
@@ -494,7 +452,7 @@ def buscar_usuarios(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error al buscar usuarios: {str(e)}", exc_info=True)
+        logger.error(f"Error en búsqueda simple de usuarios: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail="Error interno al buscar usuarios"
