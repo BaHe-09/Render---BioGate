@@ -382,7 +382,7 @@ def buscar_usuarios(
     filtro: FiltroUsuario = Depends(),
     db: Session = Depends(get_db)
 ):
-    """Endpoint para buscar usuarios por nombre, apellido o ambos"""
+    """Endpoint para buscar usuarios por nombre, apellido o ambos, incluyendo los sin rol"""
     try:
         # Validar que al menos un criterio de búsqueda esté presente
         if not filtro.nombre and not filtro.apellido:
@@ -391,7 +391,7 @@ def buscar_usuarios(
                 detail="Debe proporcionar al menos un nombre o apellido para buscar"
             )
 
-        # Construir la consulta base
+        # Construir la consulta base con LEFT JOIN para roles
         query = text("""
             SELECT 
                 p.id_persona,
@@ -405,12 +405,12 @@ def buscar_usuarios(
                 r.nombre as rol
             FROM personas p
             JOIN cuentas c ON p.id_persona = c.id_persona
-            JOIN roles r ON c.id_rol = r.id_rol
+            LEFT JOIN roles r ON c.id_rol = r.id_rol  -- Cambiado a LEFT JOIN
             WHERE 1=1
         """)
         params = {}
 
-        # Añadir condiciones de búsqueda
+        # Añadir condiciones de búsqueda (igual que antes)
         conditions = []
         if filtro.nombre:
             conditions.append("p.nombre ILIKE :nombre")
@@ -440,7 +440,7 @@ def buscar_usuarios(
             """)
             horario = db.execute(query_horario, {"id_persona": persona.id_persona}).fetchone()
             
-            # Obtener últimos 10 accesos (para no sobrecargar la respuesta)
+            # Obtener últimos 10 accesos
             query_accesos = text("""
                 SELECT 
                     ha.fecha,
@@ -464,7 +464,7 @@ def buscar_usuarios(
                 "confianza": acceso.confianza
             } for acceso in accesos_result]
             
-            # Obtener total de accesos (para mostrar conteo)
+            # Obtener total de accesos
             query_total_accesos = text("""
                 SELECT COUNT(*) 
                 FROM historial_accesos 
@@ -481,7 +481,7 @@ def buscar_usuarios(
                 "correo_electronico": persona.correo_electronico,
                 "activo": persona.activo,
                 "nombre_usuario": persona.nombre_usuario,
-                "rol": persona.rol,
+                "rol": persona.rol,  # Será None si no tiene rol asignado
                 "hora_entrada": str(horario.hora_entrada) if horario else None,
                 "hora_salida": str(horario.hora_salida) if horario else None,
                 "dias_laborales": horario.dias_laborales if horario else None,
@@ -499,6 +499,7 @@ def buscar_usuarios(
             status_code=500,
             detail="Error interno al buscar usuarios"
         )
+        
 @app.get("/reportes/", response_model=List[dict])
 def obtener_reportes(
     filtro: FiltroReportes = Depends(), 
