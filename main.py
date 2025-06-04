@@ -392,7 +392,7 @@ def filtrar_historial(filtro: FiltroHistorial = Depends(), db: Session = Depends
             historial.append({
                 "id_acceso": row.id_acceso,
                 "fecha": row.fecha,
-                "nombre_completo": f"{row.nombre} {row.apellido_paterno} {row.apellido_materno or ''}".strip(),
+                "nombre_completo": f"{row.nombre} {row.apellido_paterno} {row.apellido_materno or ''}".strip()
                 "resultado": row.resultado,
                 "estado_registro": row.estado_registro,
                 "confianza": row.confianza,
