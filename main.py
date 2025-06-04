@@ -424,7 +424,7 @@ def buscar_usuarios(
         # Validar que al menos un criterio de búsqueda esté presente
         if not filtro.nombre and not filtro.apellido:
             raise HTTPException(
-                status_code=400,
+                status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Debe proporcionar al menos un nombre o apellido para buscar"
             )
 
@@ -448,21 +448,17 @@ def buscar_usuarios(
         params = {}
 
         # Añadir condiciones de búsqueda
-        conditions = []
         if filtro.nombre:
-            conditions.append("p.nombre ILIKE :nombre")
-            params["nombre"] = f"%{nombre}%"
+            query = text(f"{query.text} AND p.nombre ILIKE :nombre")
+            params["nombre"] = f"%{filtro.nombre}%"
         
         if filtro.apellido:
-            conditions.append("(p.apellido_paterno ILIKE :apellido OR p.apellido_materno ILIKE :apellido)")
-            params["apellido"] = f"%{apellido}%"
-
-        if conditions:
-            query = text(f"{query.text} AND ({' OR '.join(conditions)})")
+            query = text(f"{query.text} AND (p.apellido_paterno ILIKE :apellido OR p.apellido_materno ILIKE :apellido)")
+            params["apellido"] = f"%{filtro.apellido}%"
 
         # Añadir límite
         query = text(f"{query.text} ORDER BY p.nombre, p.apellido_paterno LIMIT :limit")
-        params["limit"] = limit
+        params["limit"] = filtro.limit
 
         # Ejecutar consulta
         result = db.execute(query, params)
@@ -482,14 +478,17 @@ def buscar_usuarios(
                 "dias_laborales": row.dias_laborales
             })
 
-        return usuarios
+        return {
+            "total_resultados": len(usuarios),
+            "usuarios": usuarios
+        }
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error en búsqueda simple de usuarios: {str(e)}", exc_info=True)
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error interno al buscar usuarios"
         )
         
