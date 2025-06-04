@@ -414,11 +414,9 @@ def filtrar_historial(filtro: FiltroHistorial = Depends(), db: Session = Depends
             detail="Error interno al filtrar el historial"
         )
         
-@app.get("/usuarios/buscar/", response_model=List[dict])
-def buscar_usuarios_simple(
-    nombre: Optional[str] = None,
-    apellido: Optional[str] = None,
-    limit: int = Query(10, ge=1, le=100),
+@app.post("/usuarios/buscar/")
+def buscar_usuarios(
+    filtro: FiltroUsuario, 
     db: Session = Depends(get_db)
 ):
     """Endpoint simplificado para buscar usuarios solo en personas y horarios"""
@@ -495,9 +493,9 @@ def buscar_usuarios_simple(
             detail="Error interno al buscar usuarios"
         )
         
-@app.get("/reportes/", response_model=List[dict])
-def obtener_reportes(
-    filtro: FiltroReportes = Depends(), 
+@app.post("/reportes/filtrar/")
+def filtrar_reportes(
+    filtro: FiltroReportes, 
     db: Session = Depends(get_db)
 ):
     """Endpoint para obtener reportes filtrados por estado, tipo y severidad"""
