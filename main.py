@@ -419,16 +419,9 @@ def buscar_usuarios(
     filtro: FiltroUsuario, 
     db: Session = Depends(get_db)
 ):
-    """Endpoint simplificado para buscar usuarios solo en personas y horarios"""
+    """Endpoint para buscar usuarios con nombre y/o apellido opcionales"""
     try:
-        # Validar que al menos un criterio de búsqueda esté presente
-        if not filtro.nombre and not filtro.apellido:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Debe proporcionar al menos un nombre o apellido para buscar"
-            )
-
-        # Construir consulta base
+        # Construir consulta base (ahora ambos filtros son opcionales)
         query = text("""
             SELECT 
                 p.id_persona,
@@ -447,7 +440,7 @@ def buscar_usuarios(
         """)
         params = {}
 
-        # Añadir condiciones de búsqueda
+        # Añadir condiciones de búsqueda (ambas opcionales)
         if filtro.nombre:
             query = text(f"{query.text} AND p.nombre ILIKE :nombre")
             params["nombre"] = f"%{filtro.nombre}%"
@@ -486,7 +479,7 @@ def buscar_usuarios(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error en búsqueda simple de usuarios: {str(e)}", exc_info=True)
+        logger.error(f"Error en búsqueda de usuarios: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error interno al buscar usuarios"
