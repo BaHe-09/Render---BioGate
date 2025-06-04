@@ -65,7 +65,9 @@ class FiltroHistorial(BaseModel):
     fecha_inicio: Optional[datetime] = None
     fecha_fin: Optional[datetime] = None
     estado_registro: Optional[str] = None
-    resultado: Optional[str] = Field(None, regex='^(Éxito|Fallo|Desconocido)$')
+    resultado: Optional[str] = None
+    dispositivo_id: Optional[int] = None
+    limit: Optional[int] = Field(100, ge=1, le=100)
 
 class UsuarioCompleto(BaseModel):
     id_persona: int
@@ -325,9 +327,10 @@ def obtener_resumen(db: Session = Depends(get_db)):
         )
 
 @app.post("/historial/filtrar/")
-def filtrar_historial(filtro: FiltroHistorial, db: Session = Depends(get_db)):
-    """Endpoint para filtrar el historial de accesos (versión simplificada)"""
+def filtrar_historial(filtro: FiltroHistorial = Depends(), db: Session = Depends(get_db)):
+    """Endpoint para filtrar el historial de accesos con todos los filtros opcionales"""
     try:
+        # Consulta base
         query = text("""
             SELECT 
                 ha.id_acceso,
@@ -336,16 +339,18 @@ def filtrar_historial(filtro: FiltroHistorial, db: Session = Depends(get_db)):
                 ha.estado_registro,
                 ha.confianza,
                 ha.id_dispositivo,
+                d.nombre as dispositivo_nombre,
                 p.nombre,
                 p.apellido_paterno,
                 p.apellido_materno
             FROM historial_accesos ha
             JOIN personas p ON ha.id_persona = p.id_persona
+            LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
             WHERE 1=1
         """)
         params = {}
 
-        # Aplicar filtros
+        # Aplicar filtros (todos opcionales)
         if filtro.nombre:
             query = text(f"{query.text} AND p.nombre ILIKE :nombre")
             params["nombre"] = f"%{filtro.nombre}%"
@@ -369,23 +374,38 @@ def filtrar_historial(filtro: FiltroHistorial, db: Session = Depends(get_db)):
         if filtro.resultado:
             query = text(f"{query.text} AND ha.resultado = :resultado")
             params["resultado"] = filtro.resultado
+            
+        if filtro.dispositivo_id:
+            query = text(f"{query.text} AND ha.id_dispositivo = :dispositivo_id")
+            params["dispositivo_id"] = filtro.dispositivo_id
 
-        query = text(f"{query.text} ORDER BY ha.fecha DESC")
+        # Ordenación y límite
+        query = text(f"{query.text} ORDER BY ha.fecha DESC LIMIT :limit")
+        params["limit"] = filtro.limit
+
+        # Ejecutar consulta
         result = db.execute(query, params)
         
+        # Procesar resultados
         historial = []
         for row in result:
             historial.append({
                 "id_acceso": row.id_acceso,
-                "nombre_completo": f"{row.nombre} {row.apellido_paterno} {row.apellido_materno or ''}".strip(),
                 "fecha": row.fecha,
+                "nombre_completo": f"{row.nombre} {row.apellido_paterno} {row.apellido_materno or ''}".strip(),
                 "resultado": row.resultado,
                 "estado_registro": row.estado_registro,
-                "dispositivo": row.id_dispositivo,
-                "confianza": row.confianza
+                "confianza": row.confianza,
+                "dispositivo": {
+                    "id": row.id_dispositivo,
+                    "nombre": row.dispositivo_nombre
+                }
             })
 
-        return {"historial": historial}
+        return {
+            "total_resultados": len(historial),
+            "historial": historial
+        }
 
     except Exception as e:
         logger.error(f"Error al filtrar historial: {str(e)}", exc_info=True)
@@ -393,6 +413,7 @@ def filtrar_historial(filtro: FiltroHistorial, db: Session = Depends(get_db)):
             status_code=500,
             detail="Error interno al filtrar el historial"
         )
+        
 @app.get("/usuarios/buscar/", response_model=List[dict])
 def buscar_usuarios_simple(
     nombre: Optional[str] = None,
