@@ -422,7 +422,7 @@ def buscar_usuarios(
     """Endpoint simplificado para buscar usuarios solo en personas y horarios"""
     try:
         # Validar que al menos un criterio de búsqueda esté presente
-        if not nombre and not apellido:
+        if not filtro.nombre and not filtro.apellido:
             raise HTTPException(
                 status_code=400,
                 detail="Debe proporcionar al menos un nombre o apellido para buscar"
@@ -449,11 +449,11 @@ def buscar_usuarios(
 
         # Añadir condiciones de búsqueda
         conditions = []
-        if nombre:
+        if filtro.nombre:
             conditions.append("p.nombre ILIKE :nombre")
             params["nombre"] = f"%{nombre}%"
         
-        if apellido:
+        if filtro.apellido:
             conditions.append("(p.apellido_paterno ILIKE :apellido OR p.apellido_materno ILIKE :apellido)")
             params["apellido"] = f"%{apellido}%"
 
