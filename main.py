@@ -458,6 +458,19 @@ def buscar_usuarios(
         
         usuarios = []
         for row in result:
+            # Consultar estadísticas para cada usuario
+            stats_query = text("""
+                SELECT 
+                    SUM(CASE WHEN estado_registro LIKE 'ENTRADA%' THEN 1 ELSE 0 END) as total_entradas,
+                    SUM(CASE WHEN estado_registro LIKE 'RETRASO%' THEN 1 ELSE 0 END) as total_retrasos,
+                    SUM(CASE WHEN estado_registro LIKE 'SALIDA%' THEN 1 ELSE 0 END) as total_salidas,
+                    SUM(CASE WHEN estado_registro = 'FUERA_HORARIO' THEN 1 ELSE 0 END) as total_fuera_horario,
+                    COALESCE(SUM(horas_extras), 0) as total_horas_extras
+                FROM historial_accesos
+                WHERE id_persona = :id_persona
+            """)
+            stats_result = db.execute(stats_query, {"id_persona": row.id_persona}).fetchone()
+            
             usuarios.append({
                 "id_persona": row.id_persona,
                 "nombre": row.nombre,
@@ -468,7 +481,14 @@ def buscar_usuarios(
                 "activo": row.activo,
                 "hora_entrada": str(row.hora_entrada) if row.hora_entrada else None,
                 "hora_salida": str(row.hora_salida) if row.hora_salida else None,
-                "dias_laborales": row.dias_laborales
+                "dias_laborales": row.dias_laborales,
+                "estadisticas": {
+                    "total_entradas": stats_result.total_entradas or 0,
+                    "total_retrasos": stats_result.total_retrasos or 0,
+                    "total_salidas": stats_result.total_salidas or 0,
+                    "total_fuera_horario": stats_result.total_fuera_horario or 0,
+                    "total_horas_extras": float(stats_result.total_horas_extras or 0)
+                }
             })
 
         return {
