@@ -60,7 +60,7 @@ class ResumenAccesos(BaseModel):
     ultima_actualizacion: datetime
 
 class FiltroHistorial(BaseModel):
-    nombre: Optional[str] = None
+    nombre: Optional[str] = Field(None, description="Filtrar por nombre. Usar 'NULL' para obtener registros sin persona asociada")
     apellido: Optional[str] = None
     fecha_inicio: Optional[datetime] = None
     fecha_fin: Optional[datetime] = None
@@ -339,21 +339,25 @@ def filtrar_historial(filtro: FiltroHistorial, db: Session = Depends(get_db)):
                 ha.estado_registro,
                 ha.confianza,
                 ha.id_dispositivo,
+                ha.razon,
                 d.nombre as dispositivo_nombre,
                 p.nombre,
                 p.apellido_paterno,
                 p.apellido_materno
             FROM historial_accesos ha
-            JOIN personas p ON ha.id_persona = p.id_persona
+            LEFT JOIN personas p ON ha.id_persona = p.id_persona
             LEFT JOIN dispositivos d ON ha.id_dispositivo = d.id_dispositivo
             WHERE 1=1
         """)
         params = {}
 
         # Aplicar filtros (todos opcionales)
-        if filtro.nombre:
-            query = text(f"{query.text} AND p.nombre ILIKE :nombre")
-            params["nombre"] = f"%{filtro.nombre}%"
+        if filtro.nombre is not None:  # Cambiado para aceptar explícitamente NULL
+            if filtro.nombre == "NULL":  # Caso especial para filtrar por NULL
+                query = text(f"{query.text} AND p.id_persona IS NULL")
+            else:
+                query = text(f"{query.text} AND p.nombre ILIKE :nombre")
+                params["nombre"] = f"%{filtro.nombre}%"
         
         if filtro.apellido:
             query = text(f"{query.text} AND (p.apellido_paterno ILIKE :apellido OR p.apellido_materno ILIKE :apellido)")
@@ -389,13 +393,18 @@ def filtrar_historial(filtro: FiltroHistorial, db: Session = Depends(get_db)):
         # Procesar resultados
         historial = []
         for row in result:
+            nombre_completo = ""
+            if row.nombre:  # Solo construir nombre si existe
+                nombre_completo = f"{row.nombre} {row.apellido_paterno} {row.apellido_materno or ''}".strip()
+            
             historial.append({
                 "id_acceso": row.id_acceso,
                 "fecha": row.fecha,
-                "nombre_completo": f"{row.nombre} {row.apellido_paterno} {row.apellido_materno or ''}".strip(),
+                "nombre_completo": nombre_completo if nombre_completo else None,
                 "resultado": row.resultado,
                 "estado_registro": row.estado_registro,
                 "confianza": row.confianza,
+                "razon": row.razon,  # Añadido el campo razón
                 "dispositivo": {
                     "id": row.id_dispositivo,
                     "nombre": row.dispositivo_nombre
