@@ -327,8 +327,8 @@ def obtener_resumen(db: Session = Depends(get_db)):
         )
 
 @app.post("/historial/filtrar/")
-def filtrar_historial(filtro: FiltroHistorial = Depends(), db: Session = Depends(get_db)):
-    """Endpoint para filtrar el historial de accesos con todos los filtros opcionales"""
+def filtrar_historial(filtro: FiltroHistorial, db: Session = Depends(get_db)):
+    """Endpoint para filtrar el historial de accesos con todos los filtros opcionales (usando JSON)"""
     try:
         # Consulta base
         query = text("""
