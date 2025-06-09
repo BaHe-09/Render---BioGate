@@ -88,7 +88,7 @@ class FiltroReportes(BaseModel):
     estado: Optional[str] = None
     tipo_reporte: Optional[str] = None
     severidad: Optional[str] = None
-    limit: int = Field(50, ge=1, le=10) 
+    limit: int = Field(50, ge=1, le=50) 
 
 class FiltroUsuario(BaseModel):
     nombre: Optional[str] = None
